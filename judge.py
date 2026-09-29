@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable, Mapping
@@ -36,9 +37,12 @@ def judge_zone(
     fatigue_limit = calculate_fatigue_limit_mpa(
         defect_sqrt_area_um, defect_location, hv
     )
-    if fatigue_limit >= von_mises_stress_mpa * (1 + PASS_MARGIN_RATIO):
+    pass_threshold = von_mises_stress_mpa * (1 + PASS_MARGIN_RATIO)
+    if fatigue_limit >= pass_threshold or math.isclose(fatigue_limit, pass_threshold):
         return "Pass"
-    if fatigue_limit >= von_mises_stress_mpa:
+    if fatigue_limit >= von_mises_stress_mpa or math.isclose(
+        fatigue_limit, von_mises_stress_mpa
+    ):
         return "Conditional Pass"
     return "Fail"
 
