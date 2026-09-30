@@ -20,8 +20,6 @@ app = FastAPI()
 DATA_DIR = Path(__file__).parent
 CASE1_FILE_CANDIDATES = ["stress_case1_pressure.csv", "stress_case1_pressure_MOCK.csv"]
 
-JUDGMENT_SEVERITY = {"Pass": 0, "Conditional Pass": 1, "Fail": 2}
-
 # docs/scenarios.md 규칙 그대로: 결함 위치는 좌표를 직접 박아두지 않고, 매번 불러온
 # 응력 데이터에서 규칙("max"/"low_quartile" 등)에 맞는 패널을 찾아서 정한다.
 # 그래서 MOCK 데이터를 실제 팀원 CSV로 바꿔도 이 로직은 그대로 재사용된다.
@@ -82,17 +80,20 @@ def judge_scenario(scenario_id: str):
             "location": defect_config["location"],
         }
 
-    worst_row = panels.loc[panels["judgment"].map(JUDGMENT_SEVERITY).idxmax()]
+    # 결함이 없으면 전부 Pass이므로, 결함이 있는 패널의 판정이 곧 전체 최악 판정이다.
+    # (여러 패널이 같은 "Pass"로 동점일 때 임의의 패널이 골라지는 문제를 피하기 위해
+    # panels 전체를 다시 스캔하지 않고 defect_info로 직접 결정한다.)
+    if defect_info is None:
+        summary = {"worst_judgment": "Pass", "affected_panel_id": None}
+    else:
+        summary = {"worst_judgment": judgment, "affected_panel_id": defect_info["panel_id"]}
 
     return {
         "scenario_id": scenario_id,
         "data_source": source,
         "panels": panels.to_dict("records"),
         "defect": defect_info,
-        "summary": {
-            "worst_judgment": worst_row["judgment"],
-            "affected_panel_id": worst_row["panel_id"],
-        },
+        "summary": summary,
     }
 
 
