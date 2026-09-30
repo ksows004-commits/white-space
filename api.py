@@ -69,50 +69,85 @@ def _pick_panel(panels: pd.DataFrame, rule: str) -> pd.Series:
     return ordered.iloc[idx]
 
 
+def _apply_defect(panels_base: pd.DataFrame, defect_config: Optional[dict]) -> dict:
+    """결함 하나를 패널 데이터에 적용해서, 결과 화면에 필요한 모든 걸 계산한다.
+
+    - panels: "실제 이 부품"의 지도 (결함 있는 구역 하나만 판정, 나머지는 Pass)
+    - reassignment: 이 결함을 다른 모든 구역으로 옮겼다고 가정했을 때의 지도
+      ("어디에 재배치해서 쓸 수 있는지"에 대한 답)
+    """
+    panels = panels_base.copy()
+    panels["judgment"] = "Pass"
+
+    if defect_config is None:
+        reassignment = panels_base.copy()
+        reassignment["judgment"] = "Pass"
+        return {
+            "defect_info": None,
+            "panels": panels,
+            "reassignment": reassignment,
+            "summary": {
+                "worst_judgment": "Pass",
+                "affected_panel_id": None,
+                "usable_zone_count": int(len(panels_base)),
+                "total_zone_count": int(len(panels_base)),
+            },
+        }
+
+    target_panel = _pick_panel(panels_base, defect_config["rule"])
+    judgment = judge_zone(
+        float(target_panel["von_mises_mpa"]),
+        defect_config["sqrt_area_um"],
+        defect_config["location"],
+    )
+    panels.loc[panels["panel_id"] == target_panel["panel_id"], "judgment"] = judgment
+
+    reassignment = panels_base.copy()
+    reassignment["judgment"] = reassignment["von_mises_mpa"].apply(
+        lambda stress: judge_zone(
+            float(stress), defect_config["sqrt_area_um"], defect_config["location"]
+        )
+    )
+    usable_count = int((reassignment["judgment"] != "Fail").sum())
+
+    defect_info = {
+        "panel_id": target_panel["panel_id"],
+        "x_mm": float(target_panel["x_mm"]),
+        "y_mm": float(target_panel["y_mm"]),
+        "z_mm": float(target_panel["z_mm"]),
+        "sqrt_area_um": defect_config["sqrt_area_um"],
+        "location": defect_config["location"],
+    }
+
+    return {
+        "defect_info": defect_info,
+        "panels": panels,
+        "reassignment": reassignment,
+        "summary": {
+            "worst_judgment": judgment,
+            "affected_panel_id": defect_info["panel_id"],
+            "usable_zone_count": usable_count,
+            "total_zone_count": int(len(panels_base)),
+        },
+    }
+
+
 @app.get("/judge/{scenario_id}")
 def judge_scenario(scenario_id: str):
     scenario_id = scenario_id.lower()
     if scenario_id not in SCENARIO_DEFECTS:
         raise HTTPException(status_code=404, detail=f"알 수 없는 scenario_id: {scenario_id}")
 
-    panels, source = _load_case1_panels()
-    panels = panels.copy()
-    panels["judgment"] = "Pass"  # 결함이 없는 패널은 기본적으로 Pass
-
-    defect_config = SCENARIO_DEFECTS[scenario_id]
-    defect_info: Optional[dict] = None
-
-    if defect_config is not None:
-        target_panel = _pick_panel(panels, defect_config["rule"])
-        judgment = judge_zone(
-            float(target_panel["von_mises_mpa"]),
-            defect_config["sqrt_area_um"],
-            defect_config["location"],
-        )
-        panels.loc[panels["panel_id"] == target_panel["panel_id"], "judgment"] = judgment
-        defect_info = {
-            "panel_id": target_panel["panel_id"],
-            "x_mm": float(target_panel["x_mm"]),
-            "y_mm": float(target_panel["y_mm"]),
-            "z_mm": float(target_panel["z_mm"]),
-            "sqrt_area_um": defect_config["sqrt_area_um"],
-            "location": defect_config["location"],
-        }
-
-    # 결함이 없으면 전부 Pass이므로, 결함이 있는 패널의 판정이 곧 전체 최악 판정이다.
-    # (여러 패널이 같은 "Pass"로 동점일 때 임의의 패널이 골라지는 문제를 피하기 위해
-    # panels 전체를 다시 스캔하지 않고 defect_info로 직접 결정한다.)
-    if defect_info is None:
-        summary = {"worst_judgment": "Pass", "affected_panel_id": None}
-    else:
-        summary = {"worst_judgment": judgment, "affected_panel_id": defect_info["panel_id"]}
+    panels_base, source = _load_case1_panels()
+    result = _apply_defect(panels_base, SCENARIO_DEFECTS[scenario_id])
 
     return {
         "scenario_id": scenario_id,
         "data_source": source,
-        "panels": panels.to_dict("records"),
-        "defect": defect_info,
-        "summary": summary,
+        "panels": result["panels"].to_dict("records"),
+        "reassignment": result["reassignment"].to_dict("records"),
+        "defect": result["defect_info"],
+        "summary": result["summary"],
     }
 
 
@@ -134,46 +169,14 @@ def judge_batch(count: int = 10, seed: int = 42):
 
     parts = []
     for i, defect_config in enumerate(sampled, start=1):
-        target_panel = _pick_panel(panels_base, defect_config["rule"])
-        part_judgment = judge_zone(
-            float(target_panel["von_mises_mpa"]),
-            defect_config["sqrt_area_um"],
-            defect_config["location"],
-        )
-
-        panels = panels_base.copy()
-        panels["judgment"] = "Pass"
-        panels.loc[panels["panel_id"] == target_panel["panel_id"], "judgment"] = part_judgment
-
-        # 재배치 가능 위치: 이 결함을 부품 위 다른 모든 구역으로 옮겼다고 가정했을 때
-        # 각 구역에서의 판정. "어디에 쓸 수 있고 어디에 못 쓰는지"에 대한 답.
-        reassignment = panels_base.copy()
-        reassignment["judgment"] = reassignment["von_mises_mpa"].apply(
-            lambda stress, cfg=defect_config: judge_zone(
-                float(stress), cfg["sqrt_area_um"], cfg["location"]
-            )
-        )
-        usable_count = int((reassignment["judgment"] != "Fail").sum())
-
+        result = _apply_defect(panels_base, defect_config)
         parts.append(
             {
                 "serial_number": f"WS-{seed}-{i:02d}",
-                "defect": {
-                    "panel_id": target_panel["panel_id"],
-                    "x_mm": float(target_panel["x_mm"]),
-                    "y_mm": float(target_panel["y_mm"]),
-                    "z_mm": float(target_panel["z_mm"]),
-                    "sqrt_area_um": defect_config["sqrt_area_um"],
-                    "location": defect_config["location"],
-                },
-                "panels": panels.to_dict("records"),
-                "reassignment": reassignment.to_dict("records"),
-                "summary": {
-                    "worst_judgment": part_judgment,
-                    "affected_panel_id": target_panel["panel_id"],
-                    "usable_zone_count": usable_count,
-                    "total_zone_count": int(len(panels_base)),
-                },
+                "defect": result["defect_info"],
+                "panels": result["panels"].to_dict("records"),
+                "reassignment": result["reassignment"].to_dict("records"),
+                "summary": result["summary"],
             }
         )
 
