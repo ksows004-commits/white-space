@@ -32,6 +32,9 @@ def _pick_near_p90(panels, rng: random.Random):
     return band.iloc[rng.randrange(len(band))]
 
 
+FIELDNAMES = ["serial_number", "x_mm", "y_mm", "z_mm", "sqrt_area_um", "location", "hv"]
+
+
 def make_file(path: str, picks: list[dict], prefix: str, rng: random.Random) -> None:
     panels, _source = api._load_envelope_panels()
     rows = []
@@ -50,13 +53,13 @@ def make_file(path: str, picks: list[dict], prefix: str, rng: random.Random) -> 
                 "z_mm": round(float(target["z_mm"]), 4),
                 "sqrt_area_um": pick["size"],
                 "location": pick["location"],
+                # 실측 경도값(측정 오차 감안, 인코넬718 대표값 400 주변 정상 편차)
+                "hv": pick.get("hv", rng.randint(390, 410)),
             }
         )
 
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=["serial_number", "x_mm", "y_mm", "z_mm", "sqrt_area_um", "location"]
-        )
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
     print(f"{path}: {len(rows)} rows written")
@@ -72,10 +75,14 @@ def main() -> None:
     ]
     make_file("sample-data/inspection_batch_normal.csv", normal, "NORM", rng)
 
-    # 2) 혼합 배치 — Pass/Conditional Pass/Fail이 골고루 섞이도록
+    # 2) 혼합 배치 — Pass/Conditional Pass/Fail이 골고루 섞이도록.
+    #    "p90"/"max"는 랜덤 없이 정확히 한 지점을 가리키는 결정론적 규칙이라
+    #    (시나리오 B/C와 같은 방식) 여기 1개씩만 넣어 Conditional Pass/Fail을
+    #    확정적으로 보장한다. 나머지는 근처 구역에서 무작위로 골라 좌표에
+    #    변화를 준다 (결과는 대체로 Pass — 그래도 괜찮음, 목적은 다양성).
     mixed = [
-        {"rule": "near_p90", "size": 700, "location": "internal"},
-        {"rule": "near_p90", "size": 1800, "location": "surface"},
+        {"rule": "p90", "size": 900, "location": "internal", "hv": 400},  # 확정 Conditional Pass
+        {"rule": "max", "size": 1800, "location": "surface", "hv": 400},  # 확정 Fail
         {"rule": "near_max", "size": 300, "location": "surface"},
         {"rule": "median", "size": 300, "location": "internal"},
         {"rule": "median", "size": 300, "location": "surface"},
@@ -133,12 +140,7 @@ def make_multi_defect_file(path: str, rng: random.Random) -> None:
             )
 
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "serial_number", "x_mm", "y_mm", "z_mm", "sqrt_area_um", "location", "hv",
-            ],
-        )
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows)
     print(f"{path}: {len(rows)} rows written ({len(plan)} parts)")
