@@ -10,18 +10,31 @@ import itertools
 import json
 import logging
 import math
+import os
 import random
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from judge import aggregate_nodes_to_panels, judge_zone, _read_node_csv
 from judge import assign_grid_cell, calculate_fatigue_limit_mpa, PASS_MARGIN_RATIO
 
-app = FastAPI()
+# 이 서버를 인터넷에 공개로 열 때(포트를 0.0.0.0으로 바인딩할 때)를 대비한 최소
+# 인증. WHITESPACE_API_KEY 환경변수가 설정돼 있으면 모든 요청에 X-API-Key 헤더가
+# 그 값과 일치해야 한다. 설정 안 돼 있으면(로컬 SSH 터널로만 접근하는 기존 방식)
+# 인증을 요구하지 않아 기존 개발 흐름을 깨지 않는다.
+_API_KEY = os.environ.get("WHITESPACE_API_KEY")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None)):
+    if _API_KEY and x_api_key != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+
+app = FastAPI(dependencies=[Depends(require_api_key)])
 
 DATA_DIR = Path(__file__).parent
 
