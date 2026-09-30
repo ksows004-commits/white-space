@@ -21,6 +21,8 @@ export default function BatchDetailPage({
   const [selected, setSelected] = useState<string | null>(null);
   const [report, setReport] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [synthesis, setSynthesis] = useState<string | null>(null);
+  const [synthesisLoading, setSynthesisLoading] = useState(false);
 
   useEffect(() => {
     fetch(`/api/batches/${id}`)
@@ -48,6 +50,21 @@ export default function BatchDetailPage({
     }
   }
 
+  async function openSynthesis() {
+    setSynthesis(null);
+    setSynthesisLoading(true);
+    try {
+      const res = await fetch(`/api/batches/${id}/synthesis`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "종합 분석 생성 실패");
+      setSynthesis(data.synthesis);
+    } catch (err) {
+      setSynthesis(err instanceof Error ? `오류: ${err.message}` : "오류");
+    } finally {
+      setSynthesisLoading(false);
+    }
+  }
+
   const selectedPart = parts?.find((p) => p.serial_number === selected) ?? null;
 
   return (
@@ -57,18 +74,38 @@ export default function BatchDetailPage({
       </Link>
       <div className="mt-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">회차 #{id} 검사 결과</h1>
-        <a
-          href={`/api/batches/${id}/csv`}
-          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50"
-        >
-          CSV 다운로드
-        </a>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={openSynthesis}
+            disabled={!parts || synthesisLoading}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            회차 종합 분석 보기
+          </button>
+          <a
+            href={`/api/batches/${id}/csv`}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50"
+          >
+            CSV 다운로드
+          </a>
+        </div>
       </div>
 
       {error && (
         <p className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-red-700">{error}</p>
       )}
       {!parts && !error && <p className="mt-6 text-gray-600">불러오는 중...</p>}
+
+      {(synthesisLoading || synthesis !== null) && (
+        <section className="mt-6 rounded-lg border border-gray-300 bg-white p-6" aria-live="polite">
+          <h2 className="text-lg font-semibold">회차 종합 분석</h2>
+          {synthesisLoading && <p className="mt-2 text-gray-500">종합 분석 생성 중...</p>}
+          {!synthesisLoading && synthesis !== null && (
+            <p className="mt-2 whitespace-pre-wrap text-gray-700">{synthesis}</p>
+          )}
+        </section>
+      )}
 
       {parts && (
         <div className="mt-6 overflow-x-auto rounded-lg border border-gray-300">
