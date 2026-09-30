@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import type { BatchPart, Judgment } from "@/lib/types";
+import type { ChatTurn } from "@/lib/chat";
 
 const JUDGMENT_COLOR: Record<Judgment, string> = {
   Pass: "text-green-700 bg-green-50",
@@ -40,6 +41,13 @@ export default function BatchDetailPage({
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
   const [triageError, setTriageError] = useState<string | null>(null);
+  const [reportVerified, setReportVerified] = useState<boolean | undefined>(undefined);
+  const [reportIssues, setReportIssues] = useState<string[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatTurn[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const detailVersion = useRef(0);
 
   useEffect(() => {
     fetch(`/api/batches/${id}`)
@@ -52,6 +60,13 @@ export default function BatchDetailPage({
   }, [id]);
 
   async function openDetail(serial: string) {
+    const version = ++detailVersion.current;
+    setChatHistory([]);
+    setChatInput("");
+    setChatLoading(false);
+    setChatError(null);
+    setReportVerified(undefined);
+    setReportIssues([]);
     setSelected(serial);
     setReport(null);
     setReportLoading(true);
@@ -59,11 +74,15 @@ export default function BatchDetailPage({
       const res = await fetch(`/api/batches/${id}/report?serial=${encodeURIComponent(serial)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "리포트 생성 실패");
+      if (version !== detailVersion.current) return;
       setReport(data.report);
+      setReportVerified(data.verified);
+      setReportIssues(data.issues ?? []);
     } catch (err) {
+      if (version !== detailVersion.current) return;
       setReport(err instanceof Error ? `오류: ${err.message}` : "오류");
     } finally {
-      setReportLoading(false);
+      if (version === detailVersion.current) setReportLoading(false);
     }
   }
 
@@ -93,10 +112,43 @@ export default function BatchDetailPage({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "트리아지 실행 실패");
       setTriageResult(data);
+      const batchRes = await fetch(`/api/batches/${id}`);
+      const batchData = await batchRes.json();
+      if (!batchRes.ok) throw new Error(batchData.error ?? "작업지시서 불러오기 실패");
+      setParts(batchData.parts);
     } catch (err) {
       setTriageError(err instanceof Error ? `오류: ${err.message}` : "오류");
     } finally {
       setTriageLoading(false);
+    }
+  }
+
+  async function sendChatMessage() {
+    const message = chatInput.trim();
+    if (!selected || !message || chatLoading) return;
+    const version = detailVersion.current;
+    const history = chatHistory;
+    setChatHistory((previous) => [...previous, { role: "user", content: message }]);
+    setChatInput("");
+    setChatError(null);
+    setChatLoading(true);
+    try {
+      const res = await fetch(`/api/batches/${id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial: selected, message, history }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "상담 응답 생성 실패");
+      if (version !== detailVersion.current) return;
+      setChatHistory((previous) => [...previous, { role: "assistant", content: data.reply }]);
+    } catch (err) {
+      if (version !== detailVersion.current) return;
+      setChatHistory(history);
+      setChatInput(message);
+      setChatError(err instanceof Error ? `오류: ${err.message}` : "오류");
+    } finally {
+      if (version === detailVersion.current) setChatLoading(false);
     }
   }
 
@@ -258,10 +310,58 @@ export default function BatchDetailPage({
           )}
           <div className="mt-4">
             <h3 className="font-medium">AI 분석 리포트</h3>
+            {!reportLoading && reportVerified === true && (
+              <span className="mt-2 inline-block rounded bg-green-50 px-2 py-1 text-xs text-green-700">✓ 검증 완료</span>
+            )}
+            {!reportLoading && reportVerified === false && (
+              <div className="mt-2 text-sm text-amber-700">
+                <span className="rounded bg-amber-50 px-2 py-1 text-xs">⚠ {reportIssues.length}개 문제 발견</span>
+                {reportIssues.length > 0 && (
+                  <ul className="mt-2 list-disc pl-5 text-xs">
+                    {reportIssues.map((issue, index) => <li key={index}>{issue}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
             {reportLoading && <p className="mt-2 text-gray-500">리포트 생성 중...</p>}
             {!reportLoading && report && (
               <p className="mt-2 whitespace-pre-wrap text-gray-700">{report}</p>
             )}
+          </div>
+          {selectedPart.work_order && (
+            <div className="mt-6">
+              <h3 className="font-medium">재배치 작업지시서</h3>
+              <p className="mt-2 whitespace-pre-wrap text-gray-700">{selectedPart.work_order}</p>
+            </div>
+          )}
+          <div className="mt-6 border-t border-gray-200 pt-4">
+            <h3 className="font-medium">AI 상담</h3>
+            <div className="mt-3 space-y-3" aria-live="polite">
+              {chatHistory.map((turn, index) => (
+                <div key={index} className={turn.role === "user" ? "flex justify-end" : "flex justify-start"}>
+                  <p className={`max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${turn.role === "user" ? "bg-blue-50 text-blue-800" : "text-gray-700"}`}>
+                    {turn.content}
+                  </p>
+                </div>
+              ))}
+              {chatLoading && <p className="text-sm text-gray-500">답변 생성 중...</p>}
+              {chatError && <p className="text-sm text-red-700">{chatError}</p>}
+            </div>
+            <form className="mt-3 flex gap-2" onSubmit={(event) => { event.preventDefault(); void sendChatMessage(); }}>
+              <input
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter" && event.nativeEvent.isComposing) event.preventDefault(); }}
+                disabled={chatLoading}
+                aria-label="부품 판정에 대한 질문"
+                placeholder="판정에 대해 질문하세요"
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm"
+              />
+              <button type="submit" disabled={chatLoading || !chatInput.trim()}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50">
+                전송
+              </button>
+            </form>
           </div>
         </section>
       )}

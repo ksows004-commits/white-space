@@ -32,13 +32,14 @@ export async function GET(
   }
 
   if (parts[index].report) {
-    return NextResponse.json({ report: parts[index].report });
+    return NextResponse.json({ report: parts[index].report,
+      verified: parts[index].report_verified, issues: parts[index].report_issues ?? [] });
   }
 
-  const report = await generateReport(parts[index], serial);
-  parts[index] = { ...parts[index], report };
+  const { report, verified, issues } = await generateReport(parts[index], serial);
+  parts[index] = { ...parts[index], report, report_verified: verified, report_issues: issues };
 
   await supabase.from("inspection_batches").update({ parts }).eq("id", id);
 
-  return NextResponse.json({ report });
+  return NextResponse.json({ report, verified, issues });
 }

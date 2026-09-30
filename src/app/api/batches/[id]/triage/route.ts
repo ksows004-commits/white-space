@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { generateReport } from "@/lib/report";
 import { generateSynthesis } from "@/lib/synthesis";
+import { generateWorkOrder } from "@/lib/workorder";
 import type { BatchPart, Judgment } from "@/lib/types";
 
 async function mapWithConcurrency<T, R>(
@@ -37,7 +38,11 @@ export async function POST(
     const parts = data.parts as BatchPart[];
     const pending = parts.filter((part) => part.summary.worst_judgment !== "Pass" && !part.report);
     await mapWithConcurrency(pending, 3, async (part) => {
-      part.report = await generateReport(part, part.serial_number);
+      const { report, verified, issues } = await generateReport(part, part.serial_number);
+      part.report = report;
+      part.report_verified = verified;
+      part.report_issues = issues;
+      part.work_order = await generateWorkOrder(part, part.serial_number);
     });
     const reportsGenerated = pending.length;
     const synthesisGenerated = !data.synthesis;
