@@ -3,6 +3,7 @@ import { supabase } from "@/lib/supabase";
 import { generateReport } from "@/lib/report";
 import { generateSynthesis } from "@/lib/synthesis";
 import { generateWorkOrder } from "@/lib/workorder";
+import { deriveJudgment } from "@/lib/types";
 import type { BatchPart, Judgment } from "@/lib/types";
 
 async function mapWithConcurrency<T, R>(
@@ -36,7 +37,11 @@ export async function POST(
 
   try {
     const parts = data.parts as BatchPart[];
-    const pending = parts.filter((part) => part.summary.worst_judgment !== "Pass" && !part.report);
+    const pending = parts.filter(
+      (part) =>
+        deriveJudgment(part.summary.usable_zone_count, part.summary.total_zone_count) !== "Pass" &&
+        !part.report
+    );
     await mapWithConcurrency(pending, 3, async (part) => {
       const { report, verified, issues } = await generateReport(part, part.serial_number);
       part.report = report;
@@ -58,17 +63,20 @@ export async function POST(
 
     const severity: Record<Judgment, number> = { Fail: 2, "Conditional Pass": 1, Pass: 0 };
     const priorityList = [...parts]
-      .sort((a, b) => severity[b.summary.worst_judgment] - severity[a.summary.worst_judgment]
-        || (a.summary.usable_zone_count ?? Infinity) - (b.summary.usable_zone_count ?? Infinity))
-      .map((part) => {
-        const judgment = part.summary.worst_judgment;
+      .map((part) => ({
+        part,
+        judgment: deriveJudgment(part.summary.usable_zone_count, part.summary.total_zone_count),
+      }))
+      .sort((a, b) => severity[b.judgment] - severity[a.judgment]
+        || (a.part.summary.usable_zone_count ?? Infinity) - (b.part.summary.usable_zone_count ?? Infinity))
+      .map(({ part, judgment }) => {
         const usable = part.summary.usable_zone_count ?? null;
         const total = part.summary.total_zone_count ?? null;
         const reason = judgment === "Fail"
-          ? usable !== null && total !== null
-            ? `불합격 — 재배치 가능 구역 ${usable}/${total}`
-            : "불합격 — 재배치 가능 구역 정보 없음"
-          : judgment === "Conditional Pass" ? "조건부 승인 — 검사원 재량 판단 필요" : "정상";
+          ? "불합격 — 모든 구역에서 사용 불가, 폐기 검토 대상"
+          : judgment === "Conditional Pass"
+            ? `조건부 승인 — ${usable}/${total} 구역에서 사용 가능, 설치 위치 지정 필요`
+            : "정상 — 모든 구역에서 사용 가능";
         return {
           serial_number: part.serial_number,
           worst_judgment: judgment,

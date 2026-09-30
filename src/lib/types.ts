@@ -41,3 +41,15 @@ export interface BatchPart extends JudgeResult {
   report_issues?: string[];
   work_order?: string;
 }
+
+// 조립 전 검사라 "결함이 실제로 있는 자리"라는 개념이 의미가 없다 — 부품은
+// 회전/축방향 재설치가 가능해서, 결함이 116개 구역 중 몇 곳에서 버티는지로
+// 부품 전체 판정을 다시 정의한다 (summary.worst_judgment는 더 이상 신뢰하지
+// 않고 항상 이 함수로 계산한다. usable_zone_count/total_zone_count는 이미
+// 계산·저장돼 있어 기존 회차도 재계산 없이 그대로 적용 가능).
+export function deriveJudgment(usable?: number, total?: number): Judgment {
+  if (usable === undefined || total === undefined || total <= 0) return "Fail";
+  if (usable === total) return "Pass";
+  if (usable === 0) return "Fail";
+  return "Conditional Pass";
+}

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { use, useEffect, useRef, useState } from "react";
+import { deriveJudgment } from "@/lib/types";
 import type { BatchPart, Judgment } from "@/lib/types";
 import type { ChatTurn } from "@/lib/chat";
 
@@ -102,6 +103,14 @@ export default function BatchDetailPage({
   }
 
   const selectedPart = parts?.find((p) => p.serial_number === selected) ?? null;
+  const selectedJudgment = selectedPart
+    ? deriveJudgment(selectedPart.summary.usable_zone_count, selectedPart.summary.total_zone_count)
+    : null;
+  const usablePanels = selectedPart
+    ? selectedPart.reassignment
+        .filter((panel) => panel.judgment !== "Fail")
+        .sort((a, b) => a.von_mises_mpa - b.von_mises_mpa)
+    : [];
 
   async function runTriage() {
     setTriageResult(null);
@@ -184,6 +193,11 @@ export default function BatchDetailPage({
           </a>
         </div>
       </div>
+      <p className="mt-2 text-xs text-gray-500">
+        이 검사는 조립 전에 이뤄집니다. 판정은 &quot;지금 있는 자리에서 쓸 수 있는지&quot;가 아니라,
+        부품을 회전/축방향으로 조정해 설치할 수 있는 116개 구역 중 몇 곳에서 버틸 수 있는지로
+        정해집니다 — Pass(전체 구역 가능) / Conditional Pass(일부 구역만 가능) / Fail(전체 불가).
+      </p>
 
       {error && (
         <p className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-red-700">{error}</p>
@@ -258,7 +272,9 @@ export default function BatchDetailPage({
               </tr>
             </thead>
             <tbody>
-              {parts.map((p) => (
+              {parts.map((p) => {
+                const judgment = deriveJudgment(p.summary.usable_zone_count, p.summary.total_zone_count);
+                return (
                 <tr
                   key={p.serial_number}
                   className="cursor-pointer border-t border-gray-200 hover:bg-gray-50"
@@ -266,8 +282,8 @@ export default function BatchDetailPage({
                 >
                   <td className="px-4 py-2 font-mono">{p.serial_number}</td>
                   <td className="px-4 py-2">
-                    <span className={`rounded px-2 py-0.5 ${JUDGMENT_COLOR[p.summary.worst_judgment]}`}>
-                      {p.summary.worst_judgment}
+                    <span className={`rounded px-2 py-0.5 ${JUDGMENT_COLOR[judgment]}`}>
+                      {judgment}
                     </span>
                   </td>
                   <td className="px-4 py-2 text-gray-600">
@@ -281,7 +297,8 @@ export default function BatchDetailPage({
                     {p.summary.usable_zone_count ?? "-"} / {p.summary.total_zone_count ?? "-"}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -291,22 +308,34 @@ export default function BatchDetailPage({
         <section className="mt-6 rounded-lg border border-gray-300 bg-white p-6">
           <h2 className="text-lg font-semibold">{selectedPart.serial_number} 상세</h2>
           <p className="mt-2 text-sm text-gray-600">
-            판정: <strong>{selectedPart.summary.worst_judgment}</strong> · 영향 구역:{" "}
-            {selectedPart.summary.affected_panel_id ?? "없음"} · 재배치 가능 구역:{" "}
-            {selectedPart.summary.usable_zone_count}/{selectedPart.summary.total_zone_count}
+            종합 판정:{" "}
+            <span className={`rounded px-2 py-0.5 font-semibold ${JUDGMENT_COLOR[selectedJudgment!]}`}>
+              {selectedJudgment}
+            </span>{" "}
+            · 재배치 가능 구역: {selectedPart.summary.usable_zone_count}/
+            {selectedPart.summary.total_zone_count}
           </p>
           {selectedPart.defect.length > 0 && (
             <ul className="mt-3 space-y-1 text-sm text-gray-600">
               {selectedPart.defect.map((d, i) => (
                 <li key={i}>
                   결함 {i + 1}: {d.panel_id} · √area {d.sqrt_area_um}μm ·{" "}
-                  {d.location === "surface" ? "표면" : "내부"} ·{" "}
-                  <span className={`rounded px-1.5 py-0.5 text-xs ${JUDGMENT_COLOR[d.judgment]}`}>
-                    {d.judgment}
-                  </span>
+                  {d.location === "surface" ? "표면" : "내부"}
                 </li>
               ))}
             </ul>
+          )}
+          {selectedJudgment === "Conditional Pass" && (
+            <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+              <p className="font-medium">사용 가능한 설치 구역 (응력 낮은 순, 상위 10개)</p>
+              <ul className="mt-1 space-y-0.5 text-xs">
+                {usablePanels.slice(0, 10).map((panel) => (
+                  <li key={panel.panel_id}>
+                    {panel.panel_id}: {panel.von_mises_mpa.toFixed(2)} MPa ({panel.judgment})
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           <div className="mt-4">
             <h3 className="font-medium">AI 분석 리포트</h3>

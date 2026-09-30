@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
+import { deriveJudgment } from "@/lib/types";
 import type { Judgment, JudgeResult } from "@/lib/types";
 
 interface ScenarioResult extends JudgeResult {
@@ -139,14 +140,18 @@ export default function ResultPage({
             className="mt-6 rounded-lg border border-gray-300 bg-white p-6"
           >
             <h2 id="summary-title" className="text-lg font-semibold">
-              최종 판정: {data.summary.worst_judgment}
+              종합 판정: {deriveJudgment(data.summary.usable_zone_count, data.summary.total_zone_count)}
             </h2>
+            <p className="mt-1 text-xs text-gray-500">
+              조립 전 검사 기준 — 회전/축방향 재설치가 가능한 116개 구역 중 몇 곳에서 버틸 수
+              있는지로 판정합니다.
+            </p>
             {data.defect.length > 0 && (
               <ul className="mt-2 space-y-1 text-sm text-gray-600">
                 {data.defect.map((d, i) => (
                   <li key={i}>
                     결함 {i + 1}: {d.panel_id} (√area {d.sqrt_area_um}μm,{" "}
-                    {d.location === "surface" ? "표면" : "내부"}) — {d.judgment}
+                    {d.location === "surface" ? "표면" : "내부"})
                   </li>
                 ))}
               </ul>
