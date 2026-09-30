@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { deriveJudgment } from "@/lib/types";
 import type { BatchPart } from "@/lib/types";
 
 function csvEscape(value: string | number): string {
@@ -26,10 +27,9 @@ export async function GET(
   const parts = data.parts as BatchPart[];
   const header = [
     "serial_number",
-    "worst_judgment",
-    "affected_panel_id",
+    "worst_judgment", // 116개 설치 구역 중 usable_zone_count로부터 계산(조립 전 검사 기준)
     "defect_count",
-    "defects", // "위치(x,y,z) √area크기μm 종류:판정" 를 세미콜론으로 이어붙임
+    "defects", // "위치(x,y,z) √area크기μm 종류" 를 세미콜론으로 이어붙임
     "usable_zone_count",
     "total_zone_count",
   ];
@@ -37,14 +37,10 @@ export async function GET(
   const rows = parts.map((p) =>
     [
       p.serial_number,
-      p.summary.worst_judgment,
-      p.summary.affected_panel_id ?? "",
+      deriveJudgment(p.summary.usable_zone_count, p.summary.total_zone_count),
       p.defect.length,
       p.defect
-        .map(
-          (d) =>
-            `(${d.x_mm},${d.y_mm},${d.z_mm}) ${d.sqrt_area_um}μm ${d.location}:${d.judgment}`
-        )
+        .map((d) => `(${d.x_mm},${d.y_mm},${d.z_mm}) ${d.sqrt_area_um}μm ${d.location}`)
         .join("; "),
       p.summary.usable_zone_count ?? "",
       p.summary.total_zone_count ?? "",

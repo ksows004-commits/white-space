@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { deriveJudgment } from "./types";
 import type { BatchPart } from "./types";
 
 const anthropic = new Anthropic();
@@ -16,16 +17,17 @@ export async function generateSynthesis(parts: BatchPart[]): Promise<string> {
 function buildSynthesisPrompt(parts: BatchPart[]): string {
   const judgmentCounts = { Pass: 0, "Conditional Pass": 0, Fail: 0 };
   for (const p of parts) {
-    judgmentCounts[p.summary.worst_judgment]++;
+    judgmentCounts[deriveJudgment(p.summary.usable_zone_count, p.summary.total_zone_count)]++;
   }
 
   const partLines = parts
     .map((p) => {
-      if (p.defect.length === 0) return `${p.serial_number}: 결함 없음, 판정 ${p.summary.worst_judgment}`;
+      const judgment = deriveJudgment(p.summary.usable_zone_count, p.summary.total_zone_count);
+      if (p.defect.length === 0) return `${p.serial_number}: 결함 없음, 종합 판정 ${judgment}`;
       const defects = p.defect
-        .map((d) => `위치 ${d.panel_id}(${d.location}, √area ${d.sqrt_area_um}μm, ${d.judgment})`)
+        .map((d) => `결함 위치 ${d.panel_id}(${d.location}, √area ${d.sqrt_area_um}μm)`)
         .join(", ");
-      return `${p.serial_number}: ${defects} → 최종 판정 ${p.summary.worst_judgment}`;
+      return `${p.serial_number}: ${defects} → 종합 판정 ${judgment} (${p.summary.usable_zone_count}/${p.summary.total_zone_count} 구역 사용 가능)`;
     })
     .join("\n");
 

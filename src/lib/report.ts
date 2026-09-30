@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Anthropic as AnthropicTypes } from "@anthropic-ai/sdk";
+import { deriveJudgment } from "./types";
 import type { BatchPart, JudgeResult, Judgment, Panel } from "./types";
 import { supabase } from "./supabase";
 
@@ -147,8 +148,8 @@ export async function generateReport(result: JudgeResult, currentSerialNumber?: 
   return { report: reportText, verified, issues };
 }
 
-export function buildGroundingContext({ summary, defect, panels }: JudgeResult): string {
-  const affectedPanel = panels.find((p) => p.panel_id === summary.affected_panel_id);
+export function buildGroundingContext({ summary, defect, reassignment }: JudgeResult): string {
+  const judgment = deriveJudgment(summary.usable_zone_count, summary.total_zone_count);
 
   const defectDescription =
     defect.length === 0
@@ -156,35 +157,44 @@ export function buildGroundingContext({ summary, defect, panels }: JudgeResult):
       : defect
           .map(
             (d, i) =>
-              `결함 ${i + 1}: 위치(x=${d.x_mm}mm, y=${d.y_mm}mm, z=${d.z_mm}mm), 크기(√area) ${d.sqrt_area_um}μm, 종류: ${d.location === "surface" ? "표면" : "내부"}, 이 결함만의 판정: ${d.judgment}`
+              `결함 ${i + 1}: 크기(√area) ${d.sqrt_area_um}μm, 종류: ${d.location === "surface" ? "표면" : "내부"}`
           )
           .join("\n");
 
   const reassignmentDescription =
     summary.usable_zone_count !== undefined && summary.total_zone_count !== undefined
-      ? `전체 ${summary.total_zone_count}개 구역 중 ${summary.usable_zone_count}개 구역에서 사용 가능(Fail이 아님)`
+      ? `전체 ${summary.total_zone_count}개 설치 구역(회전/축방향 조정으로 선택 가능한 위치) 중 ${summary.usable_zone_count}개 구역에서 사용 가능`
       : "재배치 가능 구역 정보 없음";
+
+  const usablePanels = judgment === "Conditional Pass" ? getReassignmentCandidates(reassignment, 5) : [];
+  const usablePanelsDescription =
+    usablePanels.length > 0
+      ? usablePanels.map((p) => `${p.panel_id}: ${p.von_mises_mpa} MPa (${p.judgment})`).join("\n")
+      : "없음";
 
   return `[결함 정보 (${defect.length}개)]
 ${defectDescription}
 
-[최종 판정]
-${summary.worst_judgment} (영향받은 구역: ${summary.affected_panel_id ?? "없음"})
-
-[해당 구역 응력]
-${affectedPanel ? `${affectedPanel.von_mises_mpa} MPa` : "정보 없음"}
+[종합 판정]
+${judgment}
+이 부품은 조립 전 검사 대상입니다 — 결함이 있어도 부품을 회전/축방향으로 조정해서
+설치하면, 결함이 어느 응력 구역에 놓이느냐에 따라 사용 가능 여부가 달라집니다.
+Pass = 116개 구역 전부에서 사용 가능. Conditional Pass = 일부 구역에서만 사용
+가능(해당 위치로 설치해야 함). Fail = 모든 구역에서 사용 불가(폐기 검토 대상).
 
 [재배치 가능 범위]
-${reassignmentDescription}`;
+${reassignmentDescription}
+
+[사용 가능한 구역 예시 (응력 낮은 순, 최대 5개)]
+${usablePanelsDescription}`;
 }
 
 export async function verifyReport(
   result: JudgeResult, reportText: string, currentSerialNumber?: string
 ): Promise<{ verified: boolean; issues: string[] }> {
-  // 리포트 작성자는 get_reassignment_candidates/get_similar_past_inspections 도구도
-  // 쓸 수 있었으므로, 검증자도 같은 조회 결과를 봐야 "도구로 확인한 내용"을
-  // 근거 없다고 잘못 판단하지 않는다.
-  const candidates = getReassignmentCandidates(result.reassignment, 3);
+  // 리포트 작성자는 get_similar_past_inspections 도구도 쓸 수 있었으므로, 검증자도
+  // 같은 조회 결과를 봐야 "도구로 확인한 내용"을 근거 없다고 잘못 판단하지 않는다.
+  // 재배치 후보 구역은 buildGroundingContext에 이미 포함돼 있어 따로 안 붙인다.
   const severity: Record<Judgment, number> = { Pass: 0, "Conditional Pass": 1, Fail: 2 };
   const worstDefect = result.defect.reduce<(typeof result.defect)[number] | undefined>(
     (worst, defect) => !worst || severity[defect.judgment] > severity[worst.judgment] ? defect : worst,
@@ -208,9 +218,6 @@ export async function verifyReport(
 일치하는지 검토하세요. 단순 반올림 표기 차이는 문제로 지적하지 마세요.
 
 ${buildGroundingContext(result)}
-
-[재배치 후보 구역 조회 결과 (응력 낮은 순, 참고용)]
-${candidates.length > 0 ? candidates.map((c) => `${c.panel_id}: ${c.von_mises_mpa} MPa (${c.judgment})`).join("\n") : "없음"}
 
 [과거 유사 검사 이력 조회 결과 (참고용)]
 ${similarInspections.length > 0 ? JSON.stringify(similarInspections) : "없음"}
@@ -245,22 +252,20 @@ INCONSISTENT라고만 쓰세요. INCONSISTENT면 그 다음 줄부터 문제점�
 function buildPrompt(result: JudgeResult): string {
   return `당신은 발사체 부품 품질을 검토하는 레벨3 비파괴검사(NDT) 전문가입니다.
 아래 계산된 데이터만 근거로 삼아, 다른 숫자를 지어내지 말고 분석 리포트를 작성하세요.
-부품 하나에 결함이 여러 개일 수 있으며, 그중 가장 나쁜 판정이 부품의 최종 판정입니다.
+이 검사는 조립 전에 이뤄지며, 부품 하나에 결함이 여러 개일 수 있습니다. 116개 설치
+구역 중 이 부품의 결함 전부가 동시에 버틸 수 있는 구역이 몇 개인지로 부품 전체
+판정을 정합니다("종합 판정" 참고).
 
 ${buildGroundingContext(result)}
 
 다음 내용을 포함해 한국어로 200자 내외 리포트를 작성하세요:
-1. 판정 결과 요약
-2. 판정 근거 (응력값과 결함 정보를 바탕으로 — 결함이 여러 개면 어떤 결함이 최종 판정을
-   결정했는지도 언급)
-3. Conditional Pass 또는 Fail인 경우, 재배치 가능 범위(구역 수)를 근거로 이 부품을
-   어디에 쓸 수 있고 어디에 쓸 수 없는지 설명
-4. Fail인 경우, 왜 원래 위치에는 쓸 수 없는지
-5. 판정이 Conditional Pass 또는 Fail이면, get_reassignment_candidates 도구로
-   구체적인 재배치 후보 구역을 확인한 뒤 리포트에 구역 이름을 직접 언급하세요.
-   도구가 반환한 구역만 언급하고, "등"처럼 도구에 없는 구역을 추가로 지어내지
-   마세요.
-6. get_similar_past_inspections로 과거 유사 사례를 확인할 수 있으면 리포트에 참고로
+1. 종합 판정 결과 요약
+2. 판정 근거 (결함 크기·종류와 재배치 가능 구역 수를 바탕으로 설명)
+3. Conditional Pass인 경우, [사용 가능한 구역 예시]에 나온 구역 이름을 직접 언급해
+   어디로 설치하면 되는지 안내하세요. 예시에 없는 구역 이름을 지어내지 마세요.
+   5개보다 더 많은 후보가 필요하면 get_reassignment_candidates 도구를 쓰세요.
+4. Fail인 경우, 모든 구역에서 사용할 수 없어 폐기 검토 대상임을 설명하세요.
+5. get_similar_past_inspections로 과거 유사 사례를 확인할 수 있으면 리포트에 참고로
    언급하되, 도구 결과가 비어 있으면 과거 이력을 지어내지 말고 언급하지 마세요.
 
 위에 주어진 수치만 사용하고, 주어지지 않은 정보는 지어내지 마세요.`;

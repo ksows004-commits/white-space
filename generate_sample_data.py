@@ -76,14 +76,15 @@ def main() -> None:
     ]
     make_file("sample-data/inspection_batch_normal.csv", normal, "NORM", rng)
 
-    # 2) 혼합 배치 — Pass/Conditional Pass/Fail이 골고루 섞이도록.
-    #    "p90"/"max"는 랜덤 없이 정확히 한 지점을 가리키는 결정론적 규칙이라
-    #    (시나리오 B/C와 같은 방식) 여기 1개씩만 넣어 Conditional Pass/Fail을
-    #    확정적으로 보장한다. 나머지는 근처 구역에서 무작위로 골라 좌표에
-    #    변화를 준다 (결과는 대체로 Pass — 그래도 괜찮음, 목적은 다양성).
+    # 2) 혼합 배치 — 2026-10-01 판정 재정의(조립 전 검사, 116개 구역 커버리지
+    #    기준) 이후: 부품 응력 범위가 넓어서(최저 2.76MPa~최고 1265MPa) 테스트
+    #    결함 크기 범위(100~1800um) 안에서는 "116개 전부 불가"(Fail)가 사실상
+    #    발생하지 않는다. p90/max 두 항목은 결정론적으로 Conditional Pass를
+    #    보장하기 위해 남겨뒀다(예전엔 max가 확정 Fail이었음, docs/scenarios.md
+    #    참고). 나머지는 근처 구역에서 무작위로 골라 좌표에 변화를 준다.
     mixed = [
         {"rule": "p90", "size": 400, "location": "internal", "hv": 400},  # 확정 Conditional Pass
-        {"rule": "max", "size": 1800, "location": "surface", "hv": 400},  # 확정 Fail
+        {"rule": "max", "size": 1800, "location": "surface", "hv": 400},  # 확정 Conditional Pass (예전엔 확정 Fail)
         {"rule": "near_max", "size": 300, "location": "surface"},
         {"rule": "median", "size": 300, "location": "internal"},
         {"rule": "median", "size": 300, "location": "surface"},
