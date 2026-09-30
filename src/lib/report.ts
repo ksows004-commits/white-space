@@ -1,16 +1,70 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { JudgeResult } from "./types";
+import type { Anthropic as AnthropicTypes } from "@anthropic-ai/sdk";
+import type { JudgeResult, Panel } from "./types";
+
+const GET_CANDIDATES_TOOL = {
+  name: "get_reassignment_candidates",
+  description: "이 부품의 결함을 재배치할 수 있는 후보 구역을 응력이 낮은 순으로 조회합니다. 판정이 Conditional Pass 또는 Fail일 때, 구체적으로 어느 구역에 재배치 가능한지 리포트에 언급하기 전에 사용하세요.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      limit: { type: "number", description: "가져올 후보 구역 개수 (기본 3)" },
+    },
+  },
+};
 
 const anthropic = new Anthropic();
 
+function getReassignmentCandidates(reassignment: Panel[], limit: number = 3) {
+  return reassignment
+    .filter((p) => p.judgment !== "Fail")
+    .sort((a, b) => a.von_mises_mpa - b.von_mises_mpa)
+    .slice(0, limit)
+    .map((p) => ({ panel_id: p.panel_id, von_mises_mpa: p.von_mises_mpa, judgment: p.judgment }));
+}
+
 export async function generateReport(result: JudgeResult): Promise<string> {
-  const message = await anthropic.messages.create({
+  const messages: AnthropicTypes.MessageParam[] = [
+    { role: "user", content: buildPrompt(result) },
+  ];
+
+  const MAX_TOOL_ROUNDS = 2;
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 1024,
+      tools: [GET_CANDIDATES_TOOL],
+      messages,
+    });
+
+    if (response.stop_reason !== "tool_use") {
+      const textBlock = response.content.find((b) => b.type === "text");
+      return textBlock?.type === "text" ? textBlock.text : "";
+    }
+
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolResults: AnthropicTypes.ToolResultBlockParam[] = [];
+    for (const block of response.content) {
+      if (block.type === "tool_use" && block.name === "get_reassignment_candidates") {
+        const limit = (block.input as { limit?: number }).limit ?? 3;
+        const candidates = getReassignmentCandidates(result.reassignment, limit);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: JSON.stringify(candidates),
+        });
+      }
+    }
+    messages.push({ role: "user", content: toolResults });
+  }
+
+  const finalResponse = await anthropic.messages.create({
     model: "claude-haiku-4-5",
     max_tokens: 1024,
-    messages: [{ role: "user", content: buildPrompt(result) }],
+    messages,
   });
-
-  const textBlock = message.content.find((block) => block.type === "text");
+  const textBlock = finalResponse.content.find((b) => b.type === "text");
   return textBlock?.type === "text" ? textBlock.text : "";
 }
 
@@ -55,6 +109,8 @@ ${reassignmentDescription}
 3. Conditional Pass 또는 Fail인 경우, 재배치 가능 범위(구역 수)를 근거로 이 부품을
    어디에 쓸 수 있고 어디에 쓸 수 없는지 설명
 4. Fail인 경우, 왜 원래 위치에는 쓸 수 없는지
+5. 판정이 Conditional Pass 또는 Fail이면, get_reassignment_candidates 도구로
+   구체적인 재배치 후보 구역을 확인한 뒤 리포트에 구역 이름을 직접 언급하세요.
 
 위에 주어진 수치만 사용하고, 주어지지 않은 정보는 지어내지 마세요.`;
 }
