@@ -13,6 +13,7 @@ from typing import Optional
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from judge import aggregate_nodes_to_panels, judge_zone, _read_node_csv
 
@@ -69,44 +70,31 @@ def _pick_panel(panels: pd.DataFrame, rule: str) -> pd.Series:
     return ordered.iloc[idx]
 
 
-def _apply_defect(panels_base: pd.DataFrame, defect_config: Optional[dict]) -> dict:
-    """결함 하나를 패널 데이터에 적용해서, 결과 화면에 필요한 모든 걸 계산한다.
+def _nearest_panel(panels: pd.DataFrame, x_mm: float, y_mm: float, z_mm: float) -> pd.Series:
+    """업로드된 파일의 실제 좌표에 가장 가까운 패널(구역)을 찾는다."""
+    dist_sq = (panels["x_mm"] - x_mm) ** 2 + (panels["y_mm"] - y_mm) ** 2 + (panels["z_mm"] - z_mm) ** 2
+    return panels.loc[dist_sq.idxmin()]
+
+
+def _judge_at_panel(
+    panels_base: pd.DataFrame, target_panel: pd.Series, sqrt_area_um: float, location: str
+) -> dict:
+    """결함이 이미 정해진 패널(target_panel)에 있다고 할 때, 결과 화면에 필요한
+    모든 걸 계산한다 (규칙으로 골랐든 실제 좌표로 찾았든 이 지점부터는 동일).
 
     - panels: "실제 이 부품"의 지도 (결함 있는 구역 하나만 판정, 나머지는 Pass)
     - reassignment: 이 결함을 다른 모든 구역으로 옮겼다고 가정했을 때의 지도
       ("어디에 재배치해서 쓸 수 있는지"에 대한 답)
     """
+    judgment = judge_zone(float(target_panel["von_mises_mpa"]), sqrt_area_um, location)
+
     panels = panels_base.copy()
     panels["judgment"] = "Pass"
-
-    if defect_config is None:
-        reassignment = panels_base.copy()
-        reassignment["judgment"] = "Pass"
-        return {
-            "defect_info": None,
-            "panels": panels,
-            "reassignment": reassignment,
-            "summary": {
-                "worst_judgment": "Pass",
-                "affected_panel_id": None,
-                "usable_zone_count": int(len(panels_base)),
-                "total_zone_count": int(len(panels_base)),
-            },
-        }
-
-    target_panel = _pick_panel(panels_base, defect_config["rule"])
-    judgment = judge_zone(
-        float(target_panel["von_mises_mpa"]),
-        defect_config["sqrt_area_um"],
-        defect_config["location"],
-    )
     panels.loc[panels["panel_id"] == target_panel["panel_id"], "judgment"] = judgment
 
     reassignment = panels_base.copy()
     reassignment["judgment"] = reassignment["von_mises_mpa"].apply(
-        lambda stress: judge_zone(
-            float(stress), defect_config["sqrt_area_um"], defect_config["location"]
-        )
+        lambda stress: judge_zone(float(stress), sqrt_area_um, location)
     )
     usable_count = int((reassignment["judgment"] != "Fail").sum())
 
@@ -115,8 +103,8 @@ def _apply_defect(panels_base: pd.DataFrame, defect_config: Optional[dict]) -> d
         "x_mm": float(target_panel["x_mm"]),
         "y_mm": float(target_panel["y_mm"]),
         "z_mm": float(target_panel["z_mm"]),
-        "sqrt_area_um": defect_config["sqrt_area_um"],
-        "location": defect_config["location"],
+        "sqrt_area_um": sqrt_area_um,
+        "location": location,
     }
 
     return {
@@ -130,6 +118,33 @@ def _apply_defect(panels_base: pd.DataFrame, defect_config: Optional[dict]) -> d
             "total_zone_count": int(len(panels_base)),
         },
     }
+
+
+def _no_defect_result(panels_base: pd.DataFrame) -> dict:
+    panels = panels_base.copy()
+    panels["judgment"] = "Pass"
+    return {
+        "defect_info": None,
+        "panels": panels,
+        "reassignment": panels.copy(),
+        "summary": {
+            "worst_judgment": "Pass",
+            "affected_panel_id": None,
+            "usable_zone_count": int(len(panels_base)),
+            "total_zone_count": int(len(panels_base)),
+        },
+    }
+
+
+def _apply_defect(panels_base: pd.DataFrame, defect_config: Optional[dict]) -> dict:
+    """규칙("max"/"q25" 등) 기반으로 결함 위치를 정하는 경로 — 시나리오 A/B/C와
+    배치용 결함 풀에서 사용."""
+    if defect_config is None:
+        return _no_defect_result(panels_base)
+    target_panel = _pick_panel(panels_base, defect_config["rule"])
+    return _judge_at_panel(
+        panels_base, target_panel, defect_config["sqrt_area_um"], defect_config["location"]
+    )
 
 
 @app.get("/judge/{scenario_id}")
@@ -181,6 +196,50 @@ def judge_batch(count: int = 10, seed: int = 42):
         )
 
     return {"seed": seed, "data_source": source, "parts": parts}
+
+
+class UploadedDefect(BaseModel):
+    serial_number: str
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    sqrt_area_um: float
+    location: str
+
+
+class UploadBatch(BaseModel):
+    defects: list[UploadedDefect]
+
+
+@app.post("/judge_defects")
+def judge_defects(body: UploadBatch):
+    """업로드된 실제 검사 파일(부품별 결함 좌표)을 판정한다. /judge_batch와 달리
+    결함 위치를 규칙으로 고르지 않고, 파일에 적힌 실제 좌표에 가장 가까운
+    구역을 찾아서 판정한다."""
+    if not body.defects:
+        raise HTTPException(status_code=400, detail="defects가 비어 있습니다")
+    if any(d.location not in ("surface", "internal") for d in body.defects):
+        raise HTTPException(
+            status_code=400, detail="location은 'surface' 또는 'internal'이어야 합니다"
+        )
+
+    panels_base, source = _load_case1_panels()
+
+    parts = []
+    for d in body.defects:
+        target_panel = _nearest_panel(panels_base, d.x_mm, d.y_mm, d.z_mm)
+        result = _judge_at_panel(panels_base, target_panel, d.sqrt_area_um, d.location)
+        parts.append(
+            {
+                "serial_number": d.serial_number,
+                "defect": result["defect_info"],
+                "panels": result["panels"].to_dict("records"),
+                "reassignment": result["reassignment"].to_dict("records"),
+                "summary": result["summary"],
+            }
+        )
+
+    return {"data_source": source, "parts": parts}
 
 
 @app.get("/health")
