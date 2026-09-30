@@ -27,12 +27,12 @@ export interface Summary {
 
 export interface JudgeResult {
   panels: Panel[];
+  reassignment: Panel[];
   defect: Defect | null;
   summary: Summary;
 }
 
 export interface BatchPart extends JudgeResult {
   serial_number: string;
-  reassignment: Panel[];
   report?: string;
 }

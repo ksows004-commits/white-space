@@ -2,32 +2,10 @@
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
+import type { Judgment, JudgeResult } from "@/lib/types";
 
-type Judgment = "Pass" | "Conditional Pass" | "Fail";
-
-interface Panel {
-  panel_id: string;
-  x_mm: number;
-  y_mm: number;
-  z_mm: number;
-  von_mises_mpa: number;
-  judgment: Judgment;
-}
-
-interface Defect {
-  panel_id: string;
-  x_mm: number;
-  y_mm: number;
-  z_mm: number;
-  sqrt_area_um: number;
-  location: "surface" | "internal";
-}
-
-interface ScenarioResult {
+interface ScenarioResult extends JudgeResult {
   scenario_id: string;
-  panels: Panel[];
-  defect: Defect | null;
-  summary: { worst_judgment: Judgment; affected_panel_id: string | null };
   report: string;
 }
 
@@ -41,6 +19,8 @@ function angleDeg(x: number, y: number): number {
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
+type MapMode = "panels" | "reassignment";
+
 export default function ResultPage({
   params,
 }: {
@@ -49,10 +29,12 @@ export default function ResultPage({
   const { scenarioId } = use(params);
   const [data, setData] = useState<ScenarioResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<MapMode>("panels");
 
   useEffect(() => {
     setData(null);
     setError(null);
+    setMode("panels");
     fetch(`/api/scenario/${scenarioId}`)
       .then(async (res) => {
         if (!res.ok) {
@@ -65,7 +47,8 @@ export default function ResultPage({
       .catch((err: Error) => setError(err.message));
   }, [scenarioId]);
 
-  const zValues = data?.panels.map((p) => p.z_mm) ?? [];
+  const shownPanels = mode === "panels" ? data?.panels : data?.reassignment;
+  const zValues = shownPanels?.map((p) => p.z_mm) ?? [];
   const zMin = Math.min(...zValues);
   const zMax = Math.max(...zValues);
 
@@ -88,11 +71,32 @@ export default function ResultPage({
 
       {data && (
         <>
+          {data.defect && (
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setMode("panels")}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
+                  mode === "panels" ? "bg-gray-900 text-white" : "border border-gray-300"
+                }`}
+              >
+                실제 결함 위치
+              </button>
+              <button
+                onClick={() => setMode("reassignment")}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
+                  mode === "reassignment" ? "bg-gray-900 text-white" : "border border-gray-300"
+                }`}
+              >
+                재배치 가능 구역
+              </button>
+            </div>
+          )}
+
           <section
             aria-label="동체외벽 2D 전개도"
-            className="relative mt-6 h-72 overflow-hidden rounded-lg border border-gray-300 bg-gray-100"
+            className="relative mt-4 h-72 overflow-hidden rounded-lg border border-gray-300 bg-gray-100"
           >
-            {data.panels.map((panel) => {
+            {shownPanels?.map((panel) => {
               const left = (angleDeg(panel.x_mm, panel.y_mm) / 360) * 100;
               const top = zMax === zMin ? 50 : ((panel.z_mm - zMin) / (zMax - zMin)) * 100;
               const isDefect = panel.panel_id === data.defect?.panel_id;
@@ -105,7 +109,7 @@ export default function ResultPage({
                     left: `${left}%`,
                     top: `${top}%`,
                     backgroundColor: JUDGMENT_COLOR[panel.judgment],
-                    outline: isDefect ? "2px solid black" : undefined,
+                    outline: mode === "panels" && isDefect ? "2px solid black" : undefined,
                   }}
                 />
               );
@@ -122,6 +126,13 @@ export default function ResultPage({
               ))}
             </div>
           </section>
+          {data.defect && (
+            <p className="mt-2 text-xs text-gray-500">
+              {mode === "panels"
+                ? "이 부품이 실제로 제작됐을 때의 지도 — 검은 테두리가 결함 위치입니다."
+                : "이 결함을 부품 위 다른 모든 구역으로 옮겼다고 가정했을 때의 지도 — 초록/주황 구역은 재배치해서 쓸 수 있습니다."}
+            </p>
+          )}
 
           <section
             aria-labelledby="summary-title"
@@ -134,6 +145,11 @@ export default function ResultPage({
               <p className="mt-2 text-sm text-gray-600">
                 결함 위치: {data.defect.panel_id} (√area {data.defect.sqrt_area_um}μm,{" "}
                 {data.defect.location === "surface" ? "표면" : "내부"})
+              </p>
+            )}
+            {data.summary.usable_zone_count !== undefined && (
+              <p className="mt-1 text-sm text-gray-600">
+                재배치 가능 구역: {data.summary.usable_zone_count} / {data.summary.total_zone_count}
               </p>
             )}
           </section>
