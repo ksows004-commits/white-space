@@ -13,34 +13,36 @@ from sklearn.neighbors import NearestNeighbors
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from surrogate_model import StressMLP, build_features
+from surrogate_model import (
+    BASE_FEATURE_COUNT, CASE_NAMES, FOURIER_FREQS, INPUT_DIM,
+    StressMLP, build_base_features, build_features,
+)
 
 DATA_DIR = Path(__file__).resolve().parent
-CASE_FILES = (
-    "stress_case1_pressure.csv", "stress_case2_thrust.csv",
-    "stress_case3_vibration.csv", "stress_case4_cryo.csv",
-)
+CASE_FILES = tuple(f"stress_{name}.csv" for name in CASE_NAMES)
 
 
 def load_training_data():
+    """Returns (coords, targets) where targets is (N, 4) - one column per load
+    case, NOT pre-collapsed to an envelope max. The model predicts all 4;
+    the envelope is taken exactly after prediction, never approximated."""
     first = pd.read_csv(DATA_DIR / CASE_FILES[0])
     coords = first[["x_mm", "y_mm", "z_mm"]].to_numpy(dtype=np.float64)
-    target = first["von_mises_mpa"].to_numpy(dtype=np.float64)
-    for filename in CASE_FILES[1:]:
+    node_ids = first["node_id"].to_numpy()
+    targets = np.zeros((len(first), len(CASE_FILES)), dtype=np.float64)
+    targets[:, 0] = first["von_mises_mpa"].to_numpy(dtype=np.float64)
+    for i, filename in enumerate(CASE_FILES[1:], start=1):
         case = pd.read_csv(DATA_DIR / filename)
-        if not np.array_equal(first["node_id"].to_numpy(), case["node_id"].to_numpy()):
+        if not np.array_equal(case["node_id"].to_numpy(), node_ids):
             raise ValueError(f"Node order mismatch: {filename}")
         if not np.array_equal(coords, case[["x_mm", "y_mm", "z_mm"]].to_numpy()):
             raise ValueError(f"Node coordinates mismatch: {filename}")
-        target = np.maximum(target, case["von_mises_mpa"].to_numpy(dtype=np.float64))
-    if not np.isfinite(coords).all() or not np.isfinite(target).all():
+        targets[:, i] = case["von_mises_mpa"].to_numpy(dtype=np.float64)
+    if not np.isfinite(coords).all() or not np.isfinite(targets).all():
         raise ValueError("CSV coordinates/stresses must be finite")
-    # Principal-stress values can be negative (compression) at individual nodes even
-    # after taking the envelope max across cases. Compression doesn't drive tensile
-    # crack growth, so clamp to 0 rather than reject - this matches how judge_zone's
-    # own validation treats stress as a nonnegative crack-driving quantity.
-    target = np.clip(target, 0, None)
-    return coords, target
+    # Compression doesn't drive tensile crack growth under this fatigue model.
+    targets = np.clip(targets, 0, None)
+    return coords, targets
 
 
 def metrics(actual, predicted):
@@ -62,30 +64,39 @@ def main():
     torch.backends.cudnn.benchmark = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    coords, target = load_training_data()
-    features = build_features(coords[:, 0], coords[:, 1], coords[:, 2])
+    coords, targets = load_training_data()
+    base_features = build_base_features(coords[:, 0], coords[:, 1], coords[:, 2])
     train_idx, val_idx = train_test_split(
-        np.arange(len(target)), test_size=0.15, random_state=42
+        np.arange(len(coords)), test_size=0.15, random_state=42
     )
-    feature_mean = features[train_idx].mean(axis=0)
-    feature_std = features[train_idx].std(axis=0)
-    # A constant feature/target uses unit scale to avoid division by zero.
+
+    feature_mean = base_features[train_idx].mean(axis=0)
+    feature_std = base_features[train_idx].std(axis=0)
     feature_std = np.where(feature_std == 0, 1.0, feature_std)
-    target_mean = float(target[train_idx].mean())
-    target_std = float(target[train_idx].std()) or 1.0
+
+    target_mean = targets[train_idx].mean(axis=0)
+    target_std = targets[train_idx].std(axis=0)
+    target_std = np.where(target_std == 0, 1.0, target_std)
+
     meta = {
         "feature_mean": feature_mean.tolist(), "feature_std": feature_std.tolist(),
-        "target_mean": target_mean, "target_std": target_std,
-        "input_dim": 5, "hidden_dims": [128, 128, 64],
+        "target_mean": target_mean.tolist(), "target_std": target_std.tolist(),
+        "input_dim": INPUT_DIM, "hidden_dims": [128, 128, 64],
+        "output_dim": len(CASE_NAMES), "fourier_freqs": list(FOURIER_FREQS),
     }
-    inputs = torch.from_numpy(((features - feature_mean) / feature_std).astype(np.float32))
-    targets = torch.from_numpy(((target - target_mean) / target_std).astype(np.float32)).unsqueeze(1)
+    assert base_features.shape[1] == BASE_FEATURE_COUNT
+
+    all_features = build_features(coords[:, 0], coords[:, 1], coords[:, 2], feature_mean, feature_std)
+    inputs = torch.from_numpy(all_features.astype(np.float32))
+    normalized_targets = (targets - target_mean) / target_std
+    targets_t = torch.from_numpy(normalized_targets.astype(np.float32))
+
     train_loader = DataLoader(
-        TensorDataset(inputs[train_idx], targets[train_idx]), batch_size=4096,
+        TensorDataset(inputs[train_idx], targets_t[train_idx]), batch_size=4096,
         shuffle=True, generator=torch.Generator().manual_seed(42),
     )
     val_loader = DataLoader(
-        TensorDataset(inputs[val_idx], targets[val_idx]), batch_size=4096, shuffle=False,
+        TensorDataset(inputs[val_idx], targets_t[val_idx]), batch_size=4096, shuffle=False,
     )
     model = StressMLP().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
@@ -123,17 +134,22 @@ def main():
     model.eval()
     with torch.inference_mode():
         normalized_predictions = np.concatenate([
-            model(batch_x.to(device)).cpu().numpy().reshape(-1)
+            model(batch_x.to(device)).cpu().numpy()
             for batch_x, _ in val_loader
-        ])
-    predictions = normalized_predictions.astype(np.float64) * target_std + target_mean
+        ], axis=0)
+    predictions_per_case = normalized_predictions.astype(np.float64) * target_std + target_mean
+    predictions_per_case = np.clip(predictions_per_case, 0, None)
+    predicted_envelope = predictions_per_case.max(axis=1)
+    actual_envelope = targets[val_idx].max(axis=1)
+
     nearest = NearestNeighbors(n_neighbors=1).fit(coords[train_idx])
     indices = nearest.kneighbors(coords[val_idx], return_distance=False).reshape(-1)
-    baseline_predictions = target[train_idx][indices]
+    baseline_envelope = targets[train_idx].max(axis=1)[indices]
+
     evaluation = {
         "train_size": len(train_idx), "val_size": len(val_idx),
-        "mlp": metrics(target[val_idx], predictions),
-        "nearest_neighbor_baseline": metrics(target[val_idx], baseline_predictions),
+        "mlp": metrics(actual_envelope, predicted_envelope),
+        "nearest_neighbor_baseline": metrics(actual_envelope, baseline_envelope),
     }
     for filename, data in (("surrogate_meta.json", meta), ("surrogate_eval.json", evaluation)):
         with open(DATA_DIR / filename, "w", encoding="utf-8") as handle:
