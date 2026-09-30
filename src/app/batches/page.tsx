@@ -45,6 +45,27 @@ export default function BatchesPage() {
     }
   }
 
+  async function uploadFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // 같은 파일 다시 선택해도 onChange가 또 뜨도록
+    if (!file) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/batches/upload", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "업로드 실패");
+      router.push(`/batches/${data.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
       <Link href="/" className="text-sm text-gray-600 underline">
@@ -52,13 +73,25 @@ export default function BatchesPage() {
       </Link>
       <div className="mt-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">검사 회차 목록</h1>
-        <button
-          onClick={runNewBatch}
-          disabled={loading}
-          className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
-        >
-          {loading ? "검사 실행 중... (몇 초 걸릴 수 있음)" : "새 회차 실행 (10개)"}
-        </button>
+        <div className="flex gap-2">
+          <label className="cursor-pointer rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50">
+            검사 파일 업로드
+            <input
+              type="file"
+              accept=".csv"
+              onChange={uploadFile}
+              disabled={loading}
+              className="hidden"
+            />
+          </label>
+          <button
+            onClick={runNewBatch}
+            disabled={loading}
+            className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
+          >
+            {loading ? "처리 중... (몇 초 걸릴 수 있음)" : "새 회차 실행 (10개, 테스트용)"}
+          </button>
+        </div>
       </div>
 
       {error && (
