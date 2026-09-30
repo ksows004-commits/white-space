@@ -1,5 +1,5 @@
 """Convert a CalculiX .frd result file to the CSV schema used by judge.py/api.py
-(node_id, x_mm, y_mm, z_mm, von_mises_mpa).
+(node_id, x_mm, y_mm, z_mm, von_mises_mpa, max_principal_stress_mpa).
 
 Usage: python frd_to_csv.py <input.frd> <output.csv>
 
@@ -11,6 +11,8 @@ works out to MPa directly - no conversion needed.
 """
 
 import sys
+
+import numpy as np
 
 
 def parse_nodes(path: str) -> dict[int, tuple[float, float, float]]:
@@ -43,8 +45,18 @@ def von_mises(sxx: float, syy: float, szz: float, sxy: float, syz: float, szx: f
     ) ** 0.5
 
 
-def parse_von_mises(path: str) -> dict[int, float]:
-    stresses: dict[int, float] = {}
+def max_principal_stress(sxx: float, syy: float, szz: float, sxy: float, syz: float, szx: float) -> float:
+    tensor = np.array([
+        [sxx, sxy, szx],
+        [sxy, syy, syz],
+        [szx, syz, szz],
+    ])
+    eigenvalues = np.linalg.eigvalsh(tensor)
+    return float(eigenvalues[-1])
+
+
+def parse_stresses(path: str) -> dict[int, tuple[float, float]]:
+    stresses: dict[int, tuple[float, float]] = {}
     state = "seek"
     with open(path, "r") as f:
         for line in f:
@@ -61,7 +73,7 @@ def parse_von_mises(path: str) -> dict[int, float]:
                     break
                 node_id = int(line[3:13])
                 vals = tuple(float(line[13 + 12 * i : 25 + 12 * i]) for i in range(6))
-                stresses[node_id] = von_mises(*vals)
+                stresses[node_id] = (von_mises(*vals), max_principal_stress(*vals))
     return stresses
 
 
@@ -72,16 +84,16 @@ def main() -> None:
 
     frd_path, csv_path = sys.argv[1], sys.argv[2]
     nodes = parse_nodes(frd_path)
-    stresses = parse_von_mises(frd_path)
+    stresses = parse_stresses(frd_path)
 
     written = 0
     with open(csv_path, "w") as out:
-        out.write("node_id,x_mm,y_mm,z_mm,von_mises_mpa\n")
+        out.write("node_id,x_mm,y_mm,z_mm,von_mises_mpa,max_principal_stress_mpa\n")
         for node_id, (x, y, z) in nodes.items():
-            vm = stresses.get(node_id)
-            if vm is None:
+            vm, principal = stresses.get(node_id, (None, None))
+            if vm is None or principal is None:
                 continue
-            out.write(f"{node_id},{x},{y},{z},{vm}\n")
+            out.write(f"{node_id},{x},{y},{z},{vm},{principal}\n")
             written += 1
 
     print(f"nodes parsed: {len(nodes)}, stress rows: {len(stresses)}, csv rows written: {written}")
