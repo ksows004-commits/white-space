@@ -2,7 +2,8 @@
 
 실제 재고용 스크립트 — 필요하면 rules/sizes/locations만 바꿔서 언제든
 새 샘플 파일을 다시 만들 수 있다. (2026-10-01: 하중 4케이스 envelope
-반영 후 재보정)
+반영 후 재보정, 이후 판정 기준을 von Mises에서 최대주응력으로 교체하며
+2차 재보정)
 """
 
 import csv
@@ -81,7 +82,7 @@ def main() -> None:
     #    확정적으로 보장한다. 나머지는 근처 구역에서 무작위로 골라 좌표에
     #    변화를 준다 (결과는 대체로 Pass — 그래도 괜찮음, 목적은 다양성).
     mixed = [
-        {"rule": "p90", "size": 900, "location": "internal", "hv": 400},  # 확정 Conditional Pass
+        {"rule": "p90", "size": 400, "location": "internal", "hv": 400},  # 확정 Conditional Pass
         {"rule": "max", "size": 1800, "location": "surface", "hv": 400},  # 확정 Fail
         {"rule": "near_max", "size": 300, "location": "surface"},
         {"rule": "median", "size": 300, "location": "internal"},

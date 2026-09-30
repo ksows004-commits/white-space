@@ -33,8 +33,13 @@ def load_training_data():
         if not np.array_equal(coords, case[["x_mm", "y_mm", "z_mm"]].to_numpy()):
             raise ValueError(f"Node coordinates mismatch: {filename}")
         target = np.maximum(target, case["von_mises_mpa"].to_numpy(dtype=np.float64))
-    if not np.isfinite(coords).all() or not np.isfinite(target).all() or (target < 0).any():
-        raise ValueError("CSV coordinates/stresses must be finite; stress must be nonnegative")
+    if not np.isfinite(coords).all() or not np.isfinite(target).all():
+        raise ValueError("CSV coordinates/stresses must be finite")
+    # Principal-stress values can be negative (compression) at individual nodes even
+    # after taking the envelope max across cases. Compression doesn't drive tensile
+    # crack growth, so clamp to 0 rather than reject - this matches how judge_zone's
+    # own validation treats stress as a nonnegative crack-driving quantity.
+    target = np.clip(target, 0, None)
     return coords, target
 
 
