@@ -1,10 +1,9 @@
 """FastAPI service wrapping judge.py for the GPU server.
 
-Serves POST-free GET /judge/{scenario_id}. Uses a MOCK case-1 stress CSV until the
-real PrePoMax result arrives (see docs/fea-data-request.md) — swap the file named
-in CASE1_FILE_CANDIDATES and this code keeps working unchanged, since defect
-placement is picked dynamically from the stress distribution rather than hardcoded
-coordinates.
+Serves GET /judge/{scenario_id} and GET /judge_batch. Reads real PrePoMax case-1
+stress data (converted from .frd via frd_to_csv.py) — falls back to a MOCK CSV if
+the real file isn't present. Defect placement is picked dynamically from the
+stress distribution (see docs/scenarios.md) rather than hardcoded coordinates.
 """
 
 import itertools
@@ -25,16 +24,19 @@ CASE1_FILE_CANDIDATES = ["stress_case1_pressure.csv", "stress_case1_pressure_MOC
 # docs/scenarios.md 규칙 그대로: 결함 위치는 좌표를 직접 박아두지 않고, 매번 불러온
 # 응력 데이터에서 규칙("max"/"q25" 등)에 맞는 패널을 찾아서 정한다.
 # 그래서 MOCK 데이터를 실제 팀원 CSV로 바꿔도 이 로직은 그대로 재사용된다.
+# 실제 데이터(내부압력 5MPa) 기준으로 보정한 값. 응력 최댓값 구역(max) 외에는
+# 어떤 결함 크기를 넣어도 사실상 전부 Pass로 나올 만큼 부품이 튼튼해서,
+# Fail/Conditional Pass를 보여주려면 응력 집중부(max)에서 크기를 키워야 한다.
 SCENARIO_DEFECTS = {
     "a": None,
-    "b": {"rule": "max", "sqrt_area_um": 500, "location": "surface"},
-    "c": {"rule": "q25", "sqrt_area_um": 200, "location": "internal"},
+    "b": {"rule": "max", "sqrt_area_um": 1800, "location": "surface"},
+    "c": {"rule": "max", "sqrt_area_um": 700, "location": "internal"},
 }
 
 # 배치 검사용 "정형화된 결함 풀" — 완전 무작위 대신, 규칙 5개 x 결함 크기 5단계 x
 # 위치 종류 2가지 = 50개를 미리 체계적으로 만들어두고 그중 일부를 뽑아서 쓴다.
 POOL_RULES = ["min", "q25", "median", "q75", "max"]
-POOL_SIZES_UM = [100, 200, 300, 400, 500]
+POOL_SIZES_UM = [100, 300, 700, 1200, 1800]
 POOL_LOCATIONS = ["surface", "internal"]
 
 
