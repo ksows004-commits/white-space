@@ -27,7 +27,7 @@ export async function GET(
     );
   }
 
-  const report = await generateReport(judgment);
+  const { report } = await generateReport(judgment);
 
   return NextResponse.json({ ...judgment, report });
 }

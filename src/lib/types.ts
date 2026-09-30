@@ -37,4 +37,7 @@ export interface JudgeResult {
 export interface BatchPart extends JudgeResult {
   serial_number: string;
   report?: string;
+  report_verified?: boolean;
+  report_issues?: string[];
+  work_order?: string;
 }
