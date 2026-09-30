@@ -10,6 +10,20 @@ const JUDGMENT_COLOR: Record<Judgment, string> = {
   Fail: "text-red-700 bg-red-50",
 };
 
+type TriagePriorityItem = {
+  serial_number: string;
+  worst_judgment: Judgment;
+  usable_zone_count: number | null;
+  total_zone_count: number | null;
+  priority_reason: string;
+};
+
+type TriageResult = {
+  reports_generated: number;
+  synthesis: string;
+  priority_list: TriagePriorityItem[];
+};
+
 export default function BatchDetailPage({
   params,
 }: {
@@ -23,6 +37,9 @@ export default function BatchDetailPage({
   const [reportLoading, setReportLoading] = useState(false);
   const [synthesis, setSynthesis] = useState<string | null>(null);
   const [synthesisLoading, setSynthesisLoading] = useState(false);
+  const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
+  const [triageLoading, setTriageLoading] = useState(false);
+  const [triageError, setTriageError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/api/batches/${id}`)
@@ -67,6 +84,22 @@ export default function BatchDetailPage({
 
   const selectedPart = parts?.find((p) => p.serial_number === selected) ?? null;
 
+  async function runTriage() {
+    setTriageResult(null);
+    setTriageError(null);
+    setTriageLoading(true);
+    try {
+      const res = await fetch(`/api/batches/${id}/triage`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "트리아지 실행 실패");
+      setTriageResult(data);
+    } catch (err) {
+      setTriageError(err instanceof Error ? `오류: ${err.message}` : "오류");
+    } finally {
+      setTriageLoading(false);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
       <Link href="/batches" className="text-sm text-gray-600 underline">
@@ -75,6 +108,14 @@ export default function BatchDetailPage({
       <div className="mt-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">회차 #{id} 검사 결과</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={runTriage}
+            disabled={!parts || triageLoading}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            배치 트리아지 실행
+          </button>
           <button
             type="button"
             onClick={openSynthesis}
@@ -96,6 +137,52 @@ export default function BatchDetailPage({
         <p className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-red-700">{error}</p>
       )}
       {!parts && !error && <p className="mt-6 text-gray-600">불러오는 중...</p>}
+
+      {(triageLoading || triageError || triageResult) && (
+        <section className="mt-6 rounded-lg border border-gray-300 bg-white p-6" aria-live="polite">
+          <h2 className="text-lg font-semibold">배치 트리아지 결과</h2>
+          {triageLoading && <p className="mt-2 text-gray-500">리포트 및 종합 분석 생성 중...</p>}
+          {triageError && <p className="mt-2 text-red-700">{triageError}</p>}
+          {triageResult && (
+            <>
+              <p className="mt-2 text-sm text-gray-600">리포트 {triageResult.reports_generated}개 생성됨</p>
+              <p className="mt-2 whitespace-pre-wrap text-gray-700">{triageResult.synthesis}</p>
+              <div className="mt-4 overflow-x-auto rounded-lg border border-gray-300">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-4 py-2">부품번호</th>
+                      <th className="px-4 py-2">판정</th>
+                      <th className="px-4 py-2">재배치 가능 구역</th>
+                      <th className="px-4 py-2">사유</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {triageResult.priority_list.map((item) => (
+                      <tr
+                        key={item.serial_number}
+                        className="cursor-pointer border-t border-gray-200 hover:bg-gray-50"
+                        onClick={() => openDetail(item.serial_number)}
+                      >
+                        <td className="px-4 py-2 font-mono">{item.serial_number}</td>
+                        <td className="px-4 py-2">
+                          <span className={`rounded px-2 py-0.5 ${JUDGMENT_COLOR[item.worst_judgment]}`}>
+                            {item.worst_judgment}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-gray-600">
+                          {item.usable_zone_count ?? "-"} / {item.total_zone_count ?? "-"}
+                        </td>
+                        <td className="px-4 py-2 text-gray-600">{item.priority_reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {(synthesisLoading || synthesis !== null) && (
         <section className="mt-6 rounded-lg border border-gray-300 bg-white p-6" aria-live="polite">
