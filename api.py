@@ -7,6 +7,9 @@ stress distribution (see docs/scenarios.md) rather than hardcoded coordinates.
 """
 
 import itertools
+import json
+import logging
+import math
 import random
 from pathlib import Path
 from typing import Optional
@@ -16,10 +19,31 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from judge import aggregate_nodes_to_panels, judge_zone, _read_node_csv
+from judge import assign_grid_cell
 
 app = FastAPI()
 
 DATA_DIR = Path(__file__).parent
+
+# Load once at module startup. Missing training artifacts/dependencies affect
+# only the new endpoint; the existing FEA routes remain available.
+_surrogate_model = None
+_surrogate_meta = None
+_surrogate_val_mae_mpa = None
+_surrogate_load_error = None
+try:
+    from surrogate_model import load_surrogate, predict_stress
+
+    _surrogate_model, _surrogate_meta = load_surrogate(
+        DATA_DIR / "surrogate_model.pt", DATA_DIR / "surrogate_meta.json"
+    )
+    with open(DATA_DIR / "surrogate_eval.json", encoding="utf-8") as handle:
+        _surrogate_val_mae_mpa = float(json.load(handle)["mlp"]["mae_mpa"])
+    if not math.isfinite(_surrogate_val_mae_mpa) or _surrogate_val_mae_mpa < 0:
+        raise ValueError("Invalid surrogate validation MAE")
+except Exception as exc:
+    _surrogate_load_error = str(exc)
+    logging.getLogger(__name__).warning("Surrogate unavailable: %s", exc)
 
 # 4개 하중 케이스 전부 로드해서 "envelope"(구역별로 4개 중 가장 나쁜 응력값)를
 # 쓴다. 부품은 비행 중 이 모든 조건을 다 겪으므로, 하나라도 못 버티면 위험하다는
@@ -328,6 +352,67 @@ def judge_defects(body: UploadBatch):
         )
 
     return {"data_source": source, "parts": parts}
+
+
+@app.post("/judge_defects_fast")
+def judge_defects_fast(body: UploadBatch):
+    """Predict stress at the supplied coordinates; retain FEA reassignment maps."""
+    if not body.defects:
+        raise HTTPException(status_code=400, detail="defects가 비어 있습니다")
+    if any(d.location not in ("surface", "internal") for d in body.defects):
+        raise HTTPException(
+            status_code=400, detail="location은 'surface' 또는 'internal'이어야 합니다"
+        )
+    for d in body.defects:
+        values = (d.x_mm, d.y_mm, d.z_mm, d.sqrt_area_um, d.hv)
+        if not all(math.isfinite(value) for value in values) or d.sqrt_area_um <= 0 or d.hv < 0:
+            raise HTTPException(status_code=422, detail="좌표·크기·경도는 유한값이어야 하며 크기는 양수, 경도는 0 이상이어야 합니다")
+    if _surrogate_load_error is not None or _surrogate_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Surrogate 모델을 사용할 수 없습니다. 학습 결과 파일과 Python 의존성을 확인한 뒤 API를 재시작하세요.",
+        )
+
+    panels_base, source = _load_envelope_panels()
+    by_serial: dict[str, list[UploadedDefect]] = {}
+    for d in body.defects:
+        by_serial.setdefault(d.serial_number, []).append(d)
+
+    parts = []
+    for serial_number, defects in by_serial.items():
+        per_defect = []
+        for d in defects:
+            stress = predict_stress(_surrogate_model, _surrogate_meta, d.x_mm, d.y_mm, d.z_mm)
+            if not math.isfinite(stress) or stress < 0:
+                raise HTTPException(status_code=422, detail="모델이 유효하지 않은 응력을 예측했습니다")
+            panel_id = "_".join(str(index) for index in assign_grid_cell(d.x_mm, d.y_mm, d.z_mm))
+            # Use the input grid cell and coordinates, never a nearest panel.
+            target = pd.Series({
+                "panel_id": panel_id, "x_mm": d.x_mm, "y_mm": d.y_mm,
+                "z_mm": d.z_mm, "von_mises_mpa": stress,
+            })
+            one = _judge_at_panel(panels_base, target, d.sqrt_area_um, d.location, d.hv)
+            one["defect_info"]["von_mises_mpa"] = stress
+            per_defect.append(one)
+        result = _combine_defects(panels_base, per_defect)
+        # Preserve the worst judgment when several defects share a grid cell.
+        for panel_id in {d["defect_info"]["panel_id"] for d in per_defect}:
+            judgments = [
+                d["defect_info"]["judgment"] for d in per_defect
+                if d["defect_info"]["panel_id"] == panel_id
+            ]
+            result["panels"].loc[result["panels"]["panel_id"] == panel_id, "judgment"] = _worst_judgment(judgments)
+        parts.append({
+            "serial_number": serial_number,
+            "defect": result["defect_info"],
+            "panels": result["panels"].to_dict("records"),
+            "reassignment": result["reassignment"].to_dict("records"),
+            "summary": result["summary"],
+        })
+    return {
+        "data_source": source, "parts": parts,
+        "method": "surrogate_mlp", "model_val_mae_mpa": _surrogate_val_mae_mpa,
+    }
 
 
 @app.get("/health")
