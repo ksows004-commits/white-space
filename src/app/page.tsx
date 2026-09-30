@@ -9,7 +9,12 @@ const scenarios = [
 export default function Home() {
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      <h1 className="text-2xl font-semibold">시나리오 선택</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">시나리오 선택</h1>
+        <Link href="/batches" className="text-sm text-gray-600 underline">
+          검사 회차 목록 →
+        </Link>
+      </div>
       <p className="mt-2 text-gray-600">분석 결과를 확인할 부품 시나리오를 선택하세요.</p>
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {scenarios.map((scenario) => (
