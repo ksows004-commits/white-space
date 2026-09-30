@@ -16,6 +16,7 @@ export interface Defect {
   z_mm: number;
   sqrt_area_um: number;
   location: "surface" | "internal";
+  judgment: Judgment;
 }
 
 export interface Summary {
@@ -28,7 +29,8 @@ export interface Summary {
 export interface JudgeResult {
   panels: Panel[];
   reassignment: Panel[];
-  defect: Defect | null;
+  // 부품 하나에 결함이 여러 개일 수 있어 배열. 결함 없음 = 빈 배열.
+  defect: Defect[];
   summary: Summary;
 }
 

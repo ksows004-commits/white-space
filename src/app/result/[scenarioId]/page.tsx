@@ -71,7 +71,7 @@ export default function ResultPage({
 
       {data && (
         <>
-          {data.defect && (
+          {data.defect.length > 0 && (
             <div className="mt-6 flex gap-2">
               <button
                 onClick={() => setMode("panels")}
@@ -99,7 +99,7 @@ export default function ResultPage({
             {shownPanels?.map((panel) => {
               const left = (angleDeg(panel.x_mm, panel.y_mm) / 360) * 100;
               const top = zMax === zMin ? 50 : ((panel.z_mm - zMin) / (zMax - zMin)) * 100;
-              const isDefect = panel.panel_id === data.defect?.panel_id;
+              const isDefect = data.defect.some((d) => d.panel_id === panel.panel_id);
               return (
                 <div
                   key={panel.panel_id}
@@ -126,7 +126,7 @@ export default function ResultPage({
               ))}
             </div>
           </section>
-          {data.defect && (
+          {data.defect.length > 0 && (
             <p className="mt-2 text-xs text-gray-500">
               {mode === "panels"
                 ? "이 부품이 실제로 제작됐을 때의 지도 — 검은 테두리가 결함 위치입니다."
@@ -141,11 +141,15 @@ export default function ResultPage({
             <h2 id="summary-title" className="text-lg font-semibold">
               최종 판정: {data.summary.worst_judgment}
             </h2>
-            {data.defect && (
-              <p className="mt-2 text-sm text-gray-600">
-                결함 위치: {data.defect.panel_id} (√area {data.defect.sqrt_area_um}μm,{" "}
-                {data.defect.location === "surface" ? "표면" : "내부"})
-              </p>
+            {data.defect.length > 0 && (
+              <ul className="mt-2 space-y-1 text-sm text-gray-600">
+                {data.defect.map((d, i) => (
+                  <li key={i}>
+                    결함 {i + 1}: {d.panel_id} (√area {d.sqrt_area_um}μm,{" "}
+                    {d.location === "surface" ? "표면" : "내부"}) — {d.judgment}
+                  </li>
+                ))}
+              </ul>
             )}
             {data.summary.usable_zone_count !== undefined && (
               <p className="mt-1 text-sm text-gray-600">
