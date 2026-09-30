@@ -17,9 +17,15 @@ export async function generateReport(result: JudgeResult): Promise<string> {
 function buildPrompt({ summary, defect, panels }: JudgeResult): string {
   const affectedPanel = panels.find((p) => p.panel_id === summary.affected_panel_id);
 
-  const defectDescription = defect
-    ? `위치(x=${defect.x_mm}mm, y=${defect.y_mm}mm, z=${defect.z_mm}mm), 결함 크기(√area) ${defect.sqrt_area_um}μm, 위치 종류: ${defect.location === "surface" ? "표면" : "내부"}`
-    : "결함 없음";
+  const defectDescription =
+    defect.length === 0
+      ? "결함 없음"
+      : defect
+          .map(
+            (d, i) =>
+              `결함 ${i + 1}: 위치(x=${d.x_mm}mm, y=${d.y_mm}mm, z=${d.z_mm}mm), 크기(√area) ${d.sqrt_area_um}μm, 종류: ${d.location === "surface" ? "표면" : "내부"}, 이 결함만의 판정: ${d.judgment}`
+          )
+          .join("\n");
 
   const reassignmentDescription =
     summary.usable_zone_count !== undefined && summary.total_zone_count !== undefined
@@ -28,8 +34,9 @@ function buildPrompt({ summary, defect, panels }: JudgeResult): string {
 
   return `당신은 발사체 부품 품질을 검토하는 레벨3 비파괴검사(NDT) 전문가입니다.
 아래 계산된 데이터만 근거로 삼아, 다른 숫자를 지어내지 말고 분석 리포트를 작성하세요.
+부품 하나에 결함이 여러 개일 수 있으며, 그중 가장 나쁜 판정이 부품의 최종 판정입니다.
 
-[결함 정보]
+[결함 정보 (${defect.length}개)]
 ${defectDescription}
 
 [최종 판정]
@@ -43,7 +50,8 @@ ${reassignmentDescription}
 
 다음 내용을 포함해 한국어로 200자 내외 리포트를 작성하세요:
 1. 판정 결과 요약
-2. 판정 근거 (응력값과 결함 정보를 바탕으로)
+2. 판정 근거 (응력값과 결함 정보를 바탕으로 — 결함이 여러 개면 어떤 결함이 최종 판정을
+   결정했는지도 언급)
 3. Conditional Pass 또는 Fail인 경우, 재배치 가능 범위(구역 수)를 근거로 이 부품을
    어디에 쓸 수 있고 어디에 쓸 수 없는지 설명
 4. Fail인 경우, 왜 원래 위치에는 쓸 수 없는지

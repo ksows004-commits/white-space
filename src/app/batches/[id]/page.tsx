@@ -77,7 +77,7 @@ export default function BatchDetailPage({
               <tr>
                 <th className="px-4 py-2">부품번호</th>
                 <th className="px-4 py-2">판정</th>
-                <th className="px-4 py-2">결함 위치/크기</th>
+                <th className="px-4 py-2">결함</th>
                 <th className="px-4 py-2">재배치 가능 구역</th>
               </tr>
             </thead>
@@ -95,9 +95,11 @@ export default function BatchDetailPage({
                     </span>
                   </td>
                   <td className="px-4 py-2 text-gray-600">
-                    {p.defect
-                      ? `√area ${p.defect.sqrt_area_um}μm · ${p.defect.location === "surface" ? "표면" : "내부"}`
-                      : "-"}
+                    {p.defect.length === 0
+                      ? "-"
+                      : p.defect.length === 1
+                        ? `√area ${p.defect[0].sqrt_area_um}μm · ${p.defect[0].location === "surface" ? "표면" : "내부"}`
+                        : `결함 ${p.defect.length}개`}
                   </td>
                   <td className="px-4 py-2 text-gray-600">
                     {p.summary.usable_zone_count ?? "-"} / {p.summary.total_zone_count ?? "-"}
@@ -117,6 +119,19 @@ export default function BatchDetailPage({
             {selectedPart.summary.affected_panel_id ?? "없음"} · 재배치 가능 구역:{" "}
             {selectedPart.summary.usable_zone_count}/{selectedPart.summary.total_zone_count}
           </p>
+          {selectedPart.defect.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-gray-600">
+              {selectedPart.defect.map((d, i) => (
+                <li key={i}>
+                  결함 {i + 1}: {d.panel_id} · √area {d.sqrt_area_um}μm ·{" "}
+                  {d.location === "surface" ? "표면" : "내부"} ·{" "}
+                  <span className={`rounded px-1.5 py-0.5 text-xs ${JUDGMENT_COLOR[d.judgment]}`}>
+                    {d.judgment}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="mt-4">
             <h3 className="font-medium">AI 분석 리포트</h3>
             {reportLoading && <p className="mt-2 text-gray-500">리포트 생성 중...</p>}

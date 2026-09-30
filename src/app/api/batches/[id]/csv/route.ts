@@ -28,11 +28,8 @@ export async function GET(
     "serial_number",
     "worst_judgment",
     "affected_panel_id",
-    "defect_x_mm",
-    "defect_y_mm",
-    "defect_z_mm",
-    "defect_sqrt_area_um",
-    "defect_location",
+    "defect_count",
+    "defects", // "위치(x,y,z) √area크기μm 종류:판정" 를 세미콜론으로 이어붙임
     "usable_zone_count",
     "total_zone_count",
   ];
@@ -42,11 +39,13 @@ export async function GET(
       p.serial_number,
       p.summary.worst_judgment,
       p.summary.affected_panel_id ?? "",
-      p.defect?.x_mm ?? "",
-      p.defect?.y_mm ?? "",
-      p.defect?.z_mm ?? "",
-      p.defect?.sqrt_area_um ?? "",
-      p.defect?.location ?? "",
+      p.defect.length,
+      p.defect
+        .map(
+          (d) =>
+            `(${d.x_mm},${d.y_mm},${d.z_mm}) ${d.sqrt_area_um}μm ${d.location}:${d.judgment}`
+        )
+        .join("; "),
       p.summary.usable_zone_count ?? "",
       p.summary.total_zone_count ?? "",
     ]

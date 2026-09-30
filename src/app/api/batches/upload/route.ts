@@ -11,9 +11,12 @@ interface UploadedDefect {
   z_mm: number;
   sqrt_area_um: number;
   location: "surface" | "internal";
+  hv?: number;
 }
 
-// 업로드 파일 형식: serial_number,x_mm,y_mm,z_mm,sqrt_area_um,location (헤더 1줄 + 부품별 1줄)
+// 업로드 파일 형식: serial_number,x_mm,y_mm,z_mm,sqrt_area_um,location[,hv]
+// (헤더 1줄 + 결함별 1줄. 같은 serial_number가 여러 줄이면 "부품 하나에 결함
+// 여러 개"로 처리됨. hv 열은 선택 — 실측 경도값 없으면 생략 가능, 기본값 400.)
 function parseCsv(text: string): UploadedDefect[] {
   const lines = text.trim().split(/\r?\n/);
   const header = lines[0].split(",").map((h) => h.trim());
@@ -23,7 +26,8 @@ function parseCsv(text: string): UploadedDefect[] {
       throw new Error(`CSV에 "${col}" 열이 없습니다. 필요한 열: ${required.join(", ")}`);
     }
   }
-  const idx = Object.fromEntries(required.map((col) => [col, header.indexOf(col)]));
+  const idx = Object.fromEntries(header.map((col, i) => [col, i]));
+  const hasHv = header.includes("hv");
 
   return lines.slice(1).filter(Boolean).map((line, i) => {
     const cells = line.split(",").map((c) => c.trim());
@@ -38,6 +42,7 @@ function parseCsv(text: string): UploadedDefect[] {
       z_mm: Number(cells[idx.z_mm]),
       sqrt_area_um: Number(cells[idx.sqrt_area_um]),
       location,
+      ...(hasHv && cells[idx.hv] ? { hv: Number(cells[idx.hv]) } : {}),
     };
   });
 }
