@@ -35,7 +35,7 @@ export async function GET(
     return NextResponse.json({ report: parts[index].report });
   }
 
-  const report = await generateReport(parts[index]);
+  const report = await generateReport(parts[index], serial);
   parts[index] = { ...parts[index], report };
 
   await supabase.from("inspection_batches").update({ parts }).eq("id", id);

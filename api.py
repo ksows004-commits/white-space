@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from judge import aggregate_nodes_to_panels, judge_zone, _read_node_csv
-from judge import assign_grid_cell
+from judge import assign_grid_cell, calculate_fatigue_limit_mpa, PASS_MARGIN_RATIO
 
 app = FastAPI()
 
@@ -412,6 +412,91 @@ def judge_defects_fast(body: UploadBatch):
     return {
         "data_source": source, "parts": parts,
         "method": "surrogate_mlp", "model_val_mae_mpa": _surrogate_val_mae_mpa,
+    }
+
+
+@app.post("/judge_defects_smart")
+def judge_defects_smart(body: UploadBatch):
+    """Escalate predictions near judgment boundaries to the precise FEA path."""
+    if not body.defects:
+        raise HTTPException(status_code=400, detail="defects가 비어 있습니다")
+    if any(d.location not in ("surface", "internal") for d in body.defects):
+        raise HTTPException(
+            status_code=400, detail="location은 'surface' 또는 'internal'이어야 합니다"
+        )
+    for d in body.defects:
+        values = (d.x_mm, d.y_mm, d.z_mm, d.sqrt_area_um, d.hv)
+        if not all(math.isfinite(value) for value in values) or d.sqrt_area_um <= 0 or d.hv < 0:
+            raise HTTPException(status_code=422, detail="좌표·크기·경도는 유한값이어야 하며 크기는 양수, 경도는 0 이상이어야 합니다")
+    if _surrogate_load_error is not None or _surrogate_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Surrogate 모델을 사용할 수 없습니다. 학습 결과 파일과 Python 의존성을 확인한 뒤 API를 재시작하세요.",
+        )
+
+    panels_base, source = _load_envelope_panels()
+    by_serial: dict[str, list[UploadedDefect]] = {}
+    for d in body.defects:
+        by_serial.setdefault(d.serial_number, []).append(d)
+
+    margin_mpa = 2 * _surrogate_val_mae_mpa
+    escalated_count = 0
+    parts = []
+    for serial_number, defects in by_serial.items():
+        per_defect = []
+        for d in defects:
+            stress = predict_stress(_surrogate_model, _surrogate_meta, d.x_mm, d.y_mm, d.z_mm)
+            if not math.isfinite(stress) or stress < 0:
+                raise HTTPException(status_code=422, detail="모델이 유효하지 않은 응력을 예측했습니다")
+            fatigue_limit = calculate_fatigue_limit_mpa(d.sqrt_area_um, d.location, d.hv)
+            pass_boundary = fatigue_limit / (1 + PASS_MARGIN_RATIO)
+            fail_boundary = fatigue_limit
+            uncertain = (
+                abs(stress - pass_boundary) <= margin_mpa
+                or abs(stress - fail_boundary) <= margin_mpa
+            )
+            if uncertain:
+                target = _nearest_panel(panels_base, d.x_mm, d.y_mm, d.z_mm)
+                method = "escalated_precise"
+                reason = f"surrogate 예측값이 판정 경계에서 오차범위(±{margin_mpa:.2f} MPa) 이내"
+                escalated_count += 1
+            else:
+                panel_id = "_".join(str(index) for index in assign_grid_cell(d.x_mm, d.y_mm, d.z_mm))
+                target = pd.Series({
+                    "panel_id": panel_id, "x_mm": d.x_mm, "y_mm": d.y_mm,
+                    "z_mm": d.z_mm, "von_mises_mpa": stress,
+                })
+                method = "fast_surrogate"
+                reason = None
+            one = _judge_at_panel(panels_base, target, d.sqrt_area_um, d.location, d.hv)
+            one["defect_info"].update({
+                "von_mises_mpa": float(target["von_mises_mpa"]),
+                "method": method, "escalation_reason": reason,
+            })
+            per_defect.append(one)
+        result = _combine_defects(panels_base, per_defect)
+        # Preserve the worst judgment when several defects share a grid cell.
+        for panel_id in {d["defect_info"]["panel_id"] for d in per_defect}:
+            judgments = [
+                d["defect_info"]["judgment"] for d in per_defect
+                if d["defect_info"]["panel_id"] == panel_id
+            ]
+            result["panels"].loc[result["panels"]["panel_id"] == panel_id, "judgment"] = _worst_judgment(judgments)
+        parts.append({
+            "serial_number": serial_number,
+            "defect": result["defect_info"],
+            "panels": result["panels"].to_dict("records"),
+            "reassignment": result["reassignment"].to_dict("records"),
+            "summary": result["summary"],
+        })
+    return {
+        "data_source": source, "parts": parts,
+        "method": "surrogate_smart", "model_val_mae_mpa": _surrogate_val_mae_mpa,
+        "escalation_summary": {
+            "total_defects": len(body.defects), "escalated_count": escalated_count,
+            "escalation_rate": escalated_count / len(body.defects) if body.defects else 0,
+            "margin_mpa": margin_mpa,
+        },
     }
 
 

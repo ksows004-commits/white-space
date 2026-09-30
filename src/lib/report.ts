@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Anthropic as AnthropicTypes } from "@anthropic-ai/sdk";
-import type { JudgeResult, Panel } from "./types";
+import type { BatchPart, JudgeResult, Judgment, Panel } from "./types";
+import { supabase } from "./supabase";
 
 const GET_CANDIDATES_TOOL = {
   name: "get_reassignment_candidates",
@@ -13,7 +14,57 @@ const GET_CANDIDATES_TOOL = {
   },
 };
 
+const GET_SIMILAR_TOOL = {
+  name: "get_similar_past_inspections",
+  description: "이 부품의 결함과 위치·크기가 비슷한 과거 검사 이력을 조회합니다. 리포트에 '과거에도 비슷한 결함이 있었다' 같은 맥락을 넣고 싶을 때 사용하세요. 이력이 없으면 빈 배열이 돌아오니 그럴 땐 지어내지 말고 언급을 생략하세요.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      limit: { type: "number", description: "가져올 유사 이력 개수 (기본 3)" },
+    },
+  },
+};
+
 const anthropic = new Anthropic();
+
+async function getSimilarPastInspections(
+  currentSerial: string | undefined,
+  location: string,
+  sqrtAreaUm: number,
+  limit = 3
+) {
+  const { data, error } = await supabase
+    .from("inspection_batches")
+    .select("parts")
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error) throw new Error(error.message);
+
+  const candidates: {
+    serial_number: string;
+    location: string;
+    sqrt_area_um: number;
+    judgment: Judgment;
+  }[] = [];
+  for (const batch of data ?? []) {
+    for (const part of (batch.parts ?? []) as BatchPart[]) {
+      if (part.serial_number === currentSerial) continue;
+      for (const defect of part.defect) {
+        if (defect.location === location) {
+          candidates.push({
+            serial_number: part.serial_number,
+            location: defect.location,
+            sqrt_area_um: defect.sqrt_area_um,
+            judgment: defect.judgment,
+          });
+        }
+      }
+    }
+  }
+  return candidates
+    .sort((a, b) => Math.abs(a.sqrt_area_um - sqrtAreaUm) - Math.abs(b.sqrt_area_um - sqrtAreaUm))
+    .slice(0, Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 3);
+}
 
 function getReassignmentCandidates(reassignment: Panel[], limit: number = 3) {
   return reassignment
@@ -23,17 +74,17 @@ function getReassignmentCandidates(reassignment: Panel[], limit: number = 3) {
     .map((p) => ({ panel_id: p.panel_id, von_mises_mpa: p.von_mises_mpa, judgment: p.judgment }));
 }
 
-export async function generateReport(result: JudgeResult): Promise<string> {
+export async function generateReport(result: JudgeResult, currentSerialNumber?: string): Promise<string> {
   const messages: AnthropicTypes.MessageParam[] = [
     { role: "user", content: buildPrompt(result) },
   ];
 
-  const MAX_TOOL_ROUNDS = 2;
+  const MAX_TOOL_ROUNDS = 3;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
       max_tokens: 1024,
-      tools: [GET_CANDIDATES_TOOL],
+      tools: [GET_CANDIDATES_TOOL, GET_SIMILAR_TOOL],
       messages,
     });
 
@@ -54,6 +105,30 @@ export async function generateReport(result: JudgeResult): Promise<string> {
           tool_use_id: block.id,
           content: JSON.stringify(candidates),
         });
+      } else if (block.type === "tool_use" && block.name === "get_similar_past_inspections") {
+        const limit = (block.input as { limit?: number }).limit ?? 3;
+        const severity: Record<Judgment, number> = { Pass: 0, "Conditional Pass": 1, Fail: 2 };
+        const worstDefect = result.defect.reduce<(typeof result.defect)[number] | undefined>(
+          (worst, defect) => !worst || severity[defect.judgment] > severity[worst.judgment] ? defect : worst,
+          undefined
+        );
+        try {
+          const inspections = worstDefect
+            ? await getSimilarPastInspections(currentSerialNumber, worstDefect.location, worstDefect.sqrt_area_um, limit)
+            : [];
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify(inspections),
+          });
+        } catch {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            is_error: true,
+            content: "과거 검사 이력 조회에 실패했습니다. 과거 이력을 지어내지 말고 언급을 생략하세요.",
+          });
+        }
       }
     }
     messages.push({ role: "user", content: toolResults });
@@ -111,6 +186,8 @@ ${reassignmentDescription}
 4. Fail인 경우, 왜 원래 위치에는 쓸 수 없는지
 5. 판정이 Conditional Pass 또는 Fail이면, get_reassignment_candidates 도구로
    구체적인 재배치 후보 구역을 확인한 뒤 리포트에 구역 이름을 직접 언급하세요.
+6. get_similar_past_inspections로 과거 유사 사례를 확인할 수 있으면 리포트에 참고로
+   언급하되, 도구 결과가 비어 있으면 과거 이력을 지어내지 말고 언급하지 마세요.
 
 위에 주어진 수치만 사용하고, 주어지지 않은 정보는 지어내지 마세요.`;
 }
