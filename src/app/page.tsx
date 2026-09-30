@@ -1,9 +1,9 @@
 import Link from "next/link";
 
 const scenarios = [
-  { id: "a", name: "시나리오 A", description: "내부 압력 하중과 가상 결함 조합 (목업)" },
-  { id: "b", name: "시나리오 B", description: "축방향 추력 하중과 가상 결함 조합 (목업)" },
-  { id: "c", name: "시나리오 C", description: "횡방향 하중과 가상 결함 조합 (목업)" },
+  { id: "a", name: "정상 부품", description: "결함 없음 — 전 구역 Pass" },
+  { id: "b", name: "고응력부 결함 부품", description: "응력이 가장 높은 지점에 결함 — Fail 예상" },
+  { id: "c", name: "재배치 가능 부품", description: "저응력 지점에 결함 — 재배치 시 사용 가능 여부 판정" },
 ];
 
 export default function Home() {
