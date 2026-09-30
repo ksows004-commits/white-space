@@ -35,3 +35,6 @@ __pycache__/
 # 원본 FRD 결과 파일 (케이스당 128MB, 총 500MB+) — CSV로 변환해서 커밋하고
 # 원본은 로컬/GPU 서버에만 보관. GitHub 100MB 파일 제한 때문에라도 제외 필요.
 *.frd
+
+.vercel
+.env*

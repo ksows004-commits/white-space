@@ -1,0 +1,13 @@
+# Vercel만 Next.js 앱(src/, public/, package.json 등)만 있으면 되고, GPU 서버용
+# Python 백엔드/원본 데이터 파일은 빌드에 전혀 쓰이지 않는다. 업로드 용량과
+# 시간을 줄이기 위해 명시적으로 제외한다 (.frd는 500MB+라 Vercel 100MB 파일
+# 제한에 걸려 배포 자체가 실패했었음).
+*.frd
+*.STEP
+*.csv
+*.pt
+*.pdf
+*.xlsx
+*.py
+sample-data/
+docs/
