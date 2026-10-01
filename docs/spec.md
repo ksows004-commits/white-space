@@ -15,7 +15,9 @@
 1. 시나리오 선택
 2. 선택된 시나리오 데이터를 GPU 서버의 예측 API로 전송해 실시간 계산 요청
 3. 계산 결과(구역별 응력값 + Pass/Conditional Pass/Fail 판정)를 받아 3D/2D로 시각화
-4. LangChain으로 판정 데이터를 정형화 → Claude API 호출 → 전문가용 리포트 생성 및 표시
+4. 판정 데이터를 근거로 Claude API(Anthropic SDK, tool-use 수동 루프) 직접 호출
+   → 전문가용 리포트 생성 및 표시 (LangChain은 미사용 — 실제 구현은
+   docs/tech-description-material.txt 참고)
 
 ## 판정 기준 응력: von Mises → 최대주응력 교체 (2026-10-01)
 
@@ -92,7 +94,7 @@
 - 3D 렌더링 난이도가 높으면 2D로 전환 필요 (이미 합의된 폴백)
 - Claude가 실제 계산값과 다른 숫자를 지어낼 위험 → 프롬프트에 실제 수치 명시 + "주어진
   값만 사용" 지시로 완화
-- 팀 전원이 1학년이라 PrePoMax, GPU 서버, Next.js, LangChain 모두 처음 다루는 도구 —
+- 팀 전원이 1학년이라 PrePoMax, GPU 서버, Next.js, Claude API 연동 모두 처음 다루는 도구 —
   각 단계마다 예상보다 시간이 더 걸릴 수 있음
 
 ## 확인 방법
