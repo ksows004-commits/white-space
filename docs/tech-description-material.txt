@@ -1,0 +1,270 @@
+==================================================================
+AI agent 기술설명서 작성용 자료
+화이트스페이스 (white space) — 제4회 경남 AI·SW 경진대회
+제조 피지컬 AI 에이전트 부문
+==================================================================
+
+이 문서는 "어떻게 작동하는가"에 초점을 맞춘 기술설명서용 자료입니다.
+수식·아키텍처·AI 모델 구조·성능 지표 위주로 정리했습니다. 숫자는 전부
+실제 계산·테스트 결과이며 지어낸 값은 없습니다.
+
+------------------------------------------------------------------
+1. 시스템 아키텍처
+------------------------------------------------------------------
+
+전체 구조 (3계층):
+
+  [프론트엔드/백엔드]          [연산 서버]           [저장소]
+  Next.js(App Router)    <-->  FastAPI(GPU서버)      Supabase
+  TypeScript                   judge.py (물리계산)    (PostgreSQL,
+  Tailwind CSS                 api.py (API/surrogate)  JSONB)
+       |
+       v
+  Claude Haiku 4.5 (Anthropic SDK, tool-use)
+
+- 프론트엔드/백엔드: Next.js API Routes가 GPU 서버(FastAPI)와 Supabase를
+  호출하는 중간 계층 역할. 사용자는 브라우저에서만 상호작용.
+- 연산 서버: 경상국립대 AI 데이터센터 GPU 서버(H200)에 FastAPI로 물리
+  계산·surrogate 모델 추론 서비스 배치. 로컬 Next.js와는 SSH 로컬
+  포트포워딩(127.0.0.1:8000)으로 연결.
+  (GPU 서버는 공인 IP를 보유하나, 실측 결과 학교 네트워크가 SSH 포트 외
+  인바운드 트래픽을 차단함을 확인 — 그래서 공개 배포 시 GPU 연동은 현재
+  비활성 상태이며, 로컬 SSH 터널을 통한 운용이 기본 구조)
+- 저장소: Supabase의 inspection_batches 테이블, 회차(batch)별로 parts
+  컬럼(JSONB)에 부품 배열 전체 저장 — 판정 결과, AI 리포트, 채팅 기록,
+  검사원 결정까지 부품 객체 하나에 전부 포함되는 구조
+
+데이터 흐름:
+  1. 사용자가 검사 CSV 업로드(serial_number,x_mm,y_mm,z_mm,sqrt_area_um,
+     location,hv) 또는 사전 정의된 시나리오 선택
+  2. Next.js API Route → GPU FastAPI(/judge_defects 등) 호출
+  3. GPU 서버: 실제 FEA 노드 데이터(32만여 개)에서 결함 좌표에 가장 가까운
+     구역(패널)을 찾아 무라카미 공식으로 판정, 116개 구역 전체에 대한
+     재배치 맵(reassignment)도 함께 계산
+  4. 결과를 Supabase에 저장
+  5. 이후 리포트/채팅/작업지시서 등 AI 에이전트 기능은 Claude API를 통해
+     Supabase에 저장된 "이미 계산된 실제 수치"만 근거로 텍스트 생성
+     (GPU 서버를 다시 호출하지 않음 — 비용·지연 최소화)
+
+------------------------------------------------------------------
+2. 물리 판정 엔진
+------------------------------------------------------------------
+
+2-1) 무라카미(Murakami) √area 결함 평가 모델
+  σw = C × (HV+120) / (√area)^(1/6)
+  - σw: 피로한계 응력(결함이 버틸 수 있는 최대 응력, MPa)
+  - C: 1.43(표면 결함) / 1.41(내부 결함) — 결함 위치에 따른 계수
+  - HV: 비커스 경도(기본값 400, 인코넬718 대표값; 업로드 CSV에 실측값
+    있으면 그 값 사용)
+  - √area: 결함의 투영 면적의 제곱근(μm) — 비파괴검사(NDT) 업계 표준
+    결함 크기 지표
+
+2-2) 판정 기준 응력 — von Mises에서 최대주응력으로 교체 (설계 변경)
+  - 배경: 결함(균열)은 항상 최악의 방향(주응력에 수직)으로 나 있다고
+    가정하는 것이 피로해석의 표준적 보수 관행. 초기 구현은 이를 von
+    Mises 등가응력으로 근사했음.
+  - 변경: CalculiX .frd 결과 파일에 이미 포함된 6성분 응력 텐서
+    [σxx,σyy,σzz,σxy,σyz,σzx]에서 최대주응력(대칭 3×3 행렬의 최대
+    고유값, numpy.linalg.eigvalsh)을 직접 계산해 교체. 새 데이터를
+    생성한 것이 아니라 기존 보유 데이터를 더 정확히 활용.
+  - 검증 결과(116개 구역 비교): 핫스팟 최고응력 1012→1266 MPa(+25%),
+    결함 크기별 판정 변화 구역 3~9%(300~1800μm 결함 기준), 변화분의
+    거의 전부가 더 보수적(엄격한) 방향으로 이동 — 즉 von Mises 기준이
+    실제보다 다소 낙관적이었을 가능성을 시사
+  - 압축 응력(음수) 처리: 최대주응력은 압축 상태에서 음수가 될 수 있음.
+    압축은 균열 진행의 구동력이 아니므로(인장 모드 피로 모델 전제) 0으로
+    clamp 처리
+
+2-3) 구역(패널) 집계
+  - 25mm × 25mm 격자로 FEA 노드를 그룹핑(비파괴검사 ASTM E155/E192
+    표준의 평가면적 관행을 참고한 격자 크기), 구역 내 노드 중 최댓값을
+    구역 대표 응력으로 사용 — 보수적 집계
+  - 4개 하중케이스(내부압력/추력/진동/극저온) 각각 패널 집계 후, 구역별로
+    4개 케이스 중 최댓값을 최종 "envelope" 응력으로 사용(비행 중 모든
+    하중 조건을 순차적으로 겪는다는 보수적 가정)
+  - 결과: 부품(동체외벽) 1개당 116개 구역
+
+2-4) 구역(패널) 단위 판정 — judge_zone()
+  fatigue_limit = calculate_fatigue_limit_mpa(sqrt_area_um, location, hv)
+  - fatigue_limit >= stress × (1 + PASS_MARGIN_RATIO) → Pass
+  - stress <= fatigue_limit < stress × (1 + PASS_MARGIN_RATIO) → Conditional Pass
+  - fatigue_limit < stress → Fail
+  (PASS_MARGIN_RATIO = 0.20, 부동소수점 경계 오차는 math.isclose로 처리)
+
+------------------------------------------------------------------
+3. 부품 전체 판정 체계 설계
+------------------------------------------------------------------
+
+설계 전제: 이 검사는 조립 전에 이뤄지며, 검사 대상 부품은 조립 시 회전/
+축방향으로 재설치 위치를 조정할 수 있다(원통형 쉘 구조 특성).
+
+판정 공식 (deriveJudgment):
+  usable_zone_count = 116개 구역 중 Fail이 아닌 구역 수
+  - usable_zone_count == 116 → Pass (모든 구역에서 사용 가능)
+  - usable_zone_count == 0   → Fail (모든 구역에서 사용 불가)
+  - 0 < usable_zone_count < 116 → Conditional Pass
+    (일부 구역에서만 사용 가능 — 해당 구역 목록을 함께 제시)
+
+구현 특징: 원본 GPU 계산(usable_zone_count, total_zone_count)은 변경
+없이, 파생 함수로 애플리케이션 전 계층(화면/리포트/에이전트)에서
+일관되게 재계산. 기존에 저장된 회차 데이터도 재처리 없이 새 판정 기준이
+즉시 적용됨(저장된 숫자는 그대로 유효하고, "숫자를 라벨로 바꾸는 규칙"만
+바뀐 구조).
+
+재배치 맵(reassignment) 계산: 결함(또는 결함 여러 개, 부품 전체 보수적
+동시 고려)이 116개 구역 각각에 "있었다면" 어떤 판정이 나올지 전수 계산.
+이를 통해 "현재 결함 위치"가 아니라 "다른 설치 위치에서의 적합성"을
+직접 판정 근거로 사용.
+
+실측 특성: 부품의 응력 범위가 최저 2.76 MPa ~ 최고 1265 MPa로 넓어,
+테스트한 결함 크기 범위(100~1800μm)에서는 "116개 전부 불가"(Fail)가
+사실상 나타나지 않음 — 최저응력 구역이 거의 모든 결함 크기를 수용하기
+때문. 판정 경계값(정확히 0개)은 임의로 보정하지 않고 유지.
+
+------------------------------------------------------------------
+4. AI 에이전트 — 기술 상세
+------------------------------------------------------------------
+
+공통 사항:
+- 모델: claude-haiku-4-5 (비용·지연 최적화 목적으로 선정)
+- SDK: Anthropic 공식 TypeScript SDK, tool-use는 수동 루프(manual loop)
+  구현(베타 Tool Runner 미사용) — 라운드마다 stop_reason 확인, 최대
+  3라운드로 제한해 비용·지연 상한 설정
+- 모든 프롬프트에 "주어진 데이터만 근거로 삼고 지어내지 말라"는 명시적
+  지시 포함 — 데이터 진실성 원칙의 기술적 구현
+
+[A] 리포트 생성 에이전트 (src/lib/report.ts: generateReport)
+  - 입력: 부품의 JudgeResult(판정/결함/재배치맵) 전체를 텍스트로 직렬화한
+    그라운딩 컨텍스트(buildGroundingContext)
+  - 도구: get_reassignment_candidates(reassignment, limit) — 재배치
+    가능 구역을 응력 낮은 순으로 최대 limit개 반환(순수 함수, 외부 호출
+    없음)
+  - 출력: 한국어 200자 내외 리포트 텍스트
+
+[B] 회차 종합 분석 (src/lib/synthesis.ts: generateSynthesis)
+  - 입력: 회차 내 전체 부품의 결함 위치(panel_id)·크기·판정을 텍스트로
+    직렬화
+  - 판정 로직은 프롬프트 내 지시로 구현: 같은/인접 구역에 결함이 반복되면
+    "공정 문제" 의심 근거 제시, 위치가 제각각이면 "재료 품질 편차"로
+    판단 — 패턴 해석은 LLM 추론에 위임하되 원본 데이터만 사용하도록 제약
+
+[C] 응력 예측 surrogate 신경망
+  - 아키텍처: StressMLP, 입력 42차원(기본 피처 6개×[1+2×3개 주파수]
+    Fourier 인코딩) → Linear(42,128)→ReLU→Linear(128,128)→ReLU→
+    Linear(128,64)→ReLU→Linear(64,4)
+  - 기본 피처(6개): x_mm, y_mm, z_mm, radius=√(x²+z²), sin(θ), cos(θ)
+    (θ=atan2(z,x) — 원통 둘레 각도. atan2 특성상 raw theta는 -π/+π
+    경계에서 불연속이므로 sin/cos 쌍으로 인코딩해 해결)
+  - Fourier 위치 인코딩: 정규화된 기본 피처에 대해 주파수 k∈{1,2,4}로
+    sin(k·x), cos(k·x) 추가 — MLP의 spectral bias(고주파 공간 변화를
+    학습하기 어려운 성질) 완화 목적
+  - 출력: 4개(하중케이스별 응력) — envelope(최댓값)을 직접 예측하지
+    않고 케이스별로 예측 후 추론 시 정확히 max 계산(근사 없음). envelope는
+    케이스가 바뀌는 지점마다 꺾이는 비매끄러운 함수라 직접 학습이
+    어려웠던 1차 버전의 한계를 구조 변경으로 해결
+  - 학습: Adam(lr=1e-3, weight_decay=1e-5), batch_size=4096, MSE loss,
+    최대 200 epoch, patience=15 early stopping, 랜덤시드 42 고정,
+    실제 FEA 노드 323,229개 중 85%/15% train/val 분할
+  - 압축(음수) 응력은 0으로 clamp 후 학습(물리적 근거: 2-2 참고)
+  - 성능(검증셋 48,485개 노드):
+      1차(단일출력, envelope 직접 예측): MAE 7.36 MPa, RMSE 15.46 MPa,
+        최대오차 743.77 MPa, R² 0.804
+      2차(4출력+Fourier, 현재 버전): MAE 4.59 MPa, RMSE 7.69 MPa,
+        최대오차 294.0 MPa, R² 0.951
+      비교군(최근접 노드 스냅): MAE 5.33 MPa, RMSE 17.14 MPa,
+        최대오차 467.0 MPa, R² 0.759
+    → 2차 버전은 모든 지표에서 비교군을 능가(1차 버전은 일부 지표만 우위)
+  - 배치: /judge_defects_fast 엔드포인트로 병렬 제공. 주 판정 경로
+    (/judge_defects)는 그대로 실제 FEA 최근접 조회 사용 — surrogate는
+    참고/실험적 기능으로 명확히 구분
+
+[D] 신뢰도 기반 자동 에스컬레이션 (/judge_defects_smart)
+  - margin_mpa = 2 × (surrogate 검증셋 MAE)
+  - 결함별로 surrogate 예측 응력과 Pass/Conditional 경계
+    (fatigue_limit/1.2), Conditional/Fail 경계(fatigue_limit)의 거리를
+    계산, margin_mpa 이내면 해당 결함만 실제 FEA 최근접 조회로 재계산
+    (escalated_precise), 아니면 surrogate 예측 그대로 사용
+    (fast_surrogate)
+  - 응답에 결함별 method/escalation_reason, 회차 escalation_summary
+    (에스컬레이션 비율) 포함 — 판정 경로의 투명성 확보
+  - 한계: 판정 경계 근접성만 트리거 조건으로 사용하므로, 경계에서 멀리
+    떨어진 지점에서 모델이 크게 틀리는 경우는 감지하지 못함(검증으로 확인)
+
+[E] 과거 유사 이력 조회 도구
+  - get_similar_past_inspections(currentSerial, location, sqrtAreaUm,
+    limit): Supabase에서 최근 20개 회차를 조회해, 현재 부품(자기 자신
+    제외)과 같은 location을 가진 과거 결함들을 crt|area 크기 차이
+    오름차순으로 정렬해 상위 limit개 반환
+  - A(리포트)/G1(채팅)에서 공통 사용
+
+[F] 배치 트리아지 에이전트 (/api/batches/[id]/triage)
+  - 오케스트레이션 로직(순수 TypeScript, 추가 LLM 호출 없음):
+    1) worst_judgment≠Pass(파생 판정)이고 아직 리포트 없는 부품만
+       선별(pending)
+    2) 동시성 제한 유틸(mapWithConcurrency, 최대 3개 병렬)로 generateReport
+       + generateWorkOrder 호출
+    3) 회차 synthesis가 없으면 생성
+    4) 우선순위 리스트: severity(Fail=2>Conditional=1>Pass=0) 내림차순,
+       동순위는 usable_zone_count 오름차순(재배치 여지 적은 것 우선)
+       정렬 — 이 단계는 LLM 미사용(이미 계산된 값의 정렬·서술 조합만)
+  - 이미 처리된 항목은 재생성하지 않아(캐시) 비용 절감 및 멱등성 보장
+
+[G1] 대화형 상담 에이전트 (src/lib/chat.ts: chatReply)
+  - 서버는 무상태(stateless): 매 요청마다 클라이언트가 전체 대화 이력
+    (history)을 함께 전송, 서버는 JudgeResult를 system 프롬프트에
+    주입하고 messages 배열에 이력+신규 메시지를 넣어 호출
+  - 도구 3종: get_reassignment_candidates, get_similar_past_inspections
+    (A/E와 동일 함수 재사용), record_inspector_decision(HITL, 4번 참고)
+  - 대화 이력은 Supabase BatchPart.chat_history에도 영속화(클라이언트
+    상태와 별개로 서버 기록 유지)
+
+[G2] 자가검증 (src/lib/report.ts: verifyReport, chat.ts에서도 재사용)
+  - 리포트/채팅 응답 생성 직후, 별도 Claude 호출로 2차 검증 수행
+  - 검증 프롬프트에 원본 리포트 작성자가 사용할 수 있었던 동일한 컨텍스트
+    (buildGroundingContext + 과거 이력 조회 결과)를 제공해, "도구로 확인한
+    내용"을 근거 없다고 오판하지 않도록 설계
+  - 응답 파싱: 모델이 결론 전에 재검토 문장을 쓰는 경우가 있어, 첫 줄
+    고정 대신 "CONSISTENT"/"INCONSISTENT" 정확히 일치하는 줄을 탐색해
+    그 지점을 판정으로 사용. 못 찾으면 안전하게 미검증(false) 처리
+  - 실측 사례: 리포트가 도구가 반환하지 않은 구역 이름을 "등"이라는
+    표현과 함께 추가로 지어낸 사례를 검증 패스가 실제로 적발(재현 가능).
+    원인은 검증 프롬프트가 애초에 도구 조회 결과를 보지 못하고 있었던
+    것으로 확인, 컨텍스트 보강으로 해결하고 생성 프롬프트에도 재발 방지
+    문구 추가
+
+[G3] 재배치 작업지시서 자동 생성 (src/lib/workorder.ts)
+  - 그라운딩 컨텍스트(buildGroundingContext) + 구조화 출력 지시(부품번호/
+    판정/권장조치/승인필요사항/비고 고정 포맷)로 생성
+  - F(트리아지)에서 non-Pass 부품에 대해 자동 생성
+
+[HITL] 검사원 승인/반려 (src/lib/decision.ts: recordInspectorDecision)
+  - Supabase BatchPart에 inspector_decision/inspector_note/
+    inspector_decided_at 기록하는 단일 함수를 수동 UI 버튼과 채팅 도구
+    (record_inspector_decision) 양쪽에서 공유
+  - 동시성 처리: 채팅 중 도구로 결정을 기록한 뒤, 채팅 라우트가 대화
+    이력을 저장할 때 호출 시작 시점의 stale한 데이터로 덮어쓰지 않도록
+    reply 수신 후 최신 parts를 재조회해 병합(레이스 컨디션 방지)
+
+[시각화] 2D 구역 지도 (src/components/PanelGridMap.tsx)
+  - panel_id("xBucket_yBucket_zBucket")를 파싱해 열(원통 둘레 각도,
+    atan2(z,x) 기반, 대표 좌표 평균으로 열별 각도 산출)과 행(축방향
+    위치, yBucket 오름차순, 대표 y_mm 평균을 mm 라벨로 표시)으로 구성된
+    CSS Grid 렌더링
+  - 설계 변경 이력: 최초 버전은 둘레 각도를 (x_mm, y_mm)으로 계산하고
+    세로축에 z_mm을 사용 — 원통 좌표계(x,z=단면, y=축방향)를 잘못
+    매핑한 버그. atan2(z,x) 및 y_mm 기반으로 수정하며 산점도 방식에서
+    격자(그리드) 방식으로 재설계
+
+------------------------------------------------------------------
+5. 기술 스택
+------------------------------------------------------------------
+
+- 프론트엔드/백엔드: Next.js 16(App Router), TypeScript, Tailwind CSS
+- AI: Anthropic Claude Haiku 4.5(@anthropic-ai/sdk), 수동 tool-use 루프
+- 물리 연산 서버: Python, FastAPI, pandas, numpy
+- Surrogate 모델: PyTorch, scikit-learn(평가지표·train/test split·
+  NearestNeighbors 비교군)
+- FEA 원본 처리: CalculiX .frd 결과 → 커스텀 고정폭 파서(frd_to_csv.py)
+- 데이터베이스: Supabase(PostgreSQL, JSONB 컬럼 기반 회차·부품 저장)
+- 인프라: GPU 서버(경상국립대 AI 데이터센터, H200), Vercel(배포, 현재
+  로컬 SSH 터널 운용 중), GitHub
