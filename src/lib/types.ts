@@ -40,6 +40,10 @@ export interface BatchPart extends JudgeResult {
   report_verified?: boolean;
   report_issues?: string[];
   work_order?: string;
+  inspector_decision?: "approved" | "rejected";
+  inspector_note?: string;
+  inspector_decided_at?: string;
+  chat_history?: import("./chat").ChatTurn[];
 }
 
 // 조립 전 검사라 "결함이 실제로 있는 자리"라는 개념이 의미가 없다 — 부품은
