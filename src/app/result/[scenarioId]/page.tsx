@@ -44,7 +44,7 @@ export default function ResultPage({
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      <Link href="/" className="text-sm text-gray-600 underline">
+      <Link href="/scenarios" className="text-sm text-gray-600 underline">
         시나리오 선택으로 돌아가기
       </Link>
       <h1 className="mt-4 text-2xl font-semibold">분석 결과 — {scenarioId.toUpperCase()}</h1>

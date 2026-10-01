@@ -192,7 +192,7 @@ export default function BatchDetailPage({
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      <Link href="/batches" className="text-sm text-gray-600 underline">
+      <Link href="/" className="text-sm text-gray-600 underline">
         회차 목록으로 돌아가기
       </Link>
       <div className="mt-4 flex items-center justify-between">

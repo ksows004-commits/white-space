@@ -1,32 +1,108 @@
-import Link from "next/link";
+"use client";
 
-const scenarios = [
-  { id: "a", name: "정상 부품", description: "결함 없음 — 전 구역 Pass" },
-  { id: "b", name: "고응력부 결함 부품", description: "응력이 가장 높은 지점에 결함 — Fail 예상" },
-  { id: "c", name: "재배치 가능 부품", description: "저응력 지점에 결함 — 재배치 시 사용 가능 여부 판정" },
-];
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+
+interface BatchSummary {
+  id: number;
+  created_at: string;
+  part_count: number;
+}
 
 export default function Home() {
+  const router = useRouter();
+  const [batches, setBatches] = useState<BatchSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function loadBatches() {
+    fetch("/api/batches")
+      .then((res) => res.json())
+      .then((data) => setBatches(data.batches ?? []));
+  }
+
+  useEffect(() => {
+    loadBatches();
+  }, []);
+
+  async function uploadFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // 같은 파일 다시 선택해도 onChange가 또 뜨도록
+    if (!file) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/batches/upload", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "업로드 실패");
+      router.push(`/batches/${data.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">시나리오 선택</h1>
-        <Link href="/batches" className="text-sm text-gray-600 underline">
-          검사 회차 목록 →
-        </Link>
+    <main className="mx-auto max-w-4xl px-4 py-10 sm:px-6">
+      <Link href="/scenarios" className="text-sm text-gray-600 underline">
+        시나리오 데모 보기 →
+      </Link>
+      <div className="mt-4 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">검사 회차 목록</h1>
+        <div className="flex gap-2">
+          <label className="cursor-pointer rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50">
+            검사 파일 업로드
+            <input
+              type="file"
+              accept=".csv"
+              onChange={uploadFile}
+              disabled={loading}
+              className="hidden"
+            />
+          </label>
+        </div>
       </div>
-      <p className="mt-2 text-gray-600">분석 결과를 확인할 부품 시나리오를 선택하세요.</p>
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {scenarios.map((scenario) => (
-          <Link
-            key={scenario.id}
-            href={`/result/${scenario.id}`}
-            className="rounded-lg border border-gray-300 bg-white p-6 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-gray-700"
-          >
-            <h2 className="text-lg font-semibold">{scenario.name}</h2>
-            <p className="mt-2 text-sm text-gray-600">{scenario.description}</p>
-          </Link>
-        ))}
+      {loading && <p className="mt-2 text-sm text-gray-500">처리 중... (몇 초 걸릴 수 있음)</p>}
+
+      {error && (
+        <p className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-red-700">{error}</p>
+      )}
+
+      <div className="mt-6 overflow-x-auto rounded-lg border border-gray-300">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="px-4 py-2">회차 ID</th>
+              <th className="px-4 py-2">검사 일시</th>
+              <th className="px-4 py-2">부품 수</th>
+            </tr>
+          </thead>
+          <tbody>
+            {batches.map((b) => (
+              <tr
+                key={b.id}
+                className="cursor-pointer border-t border-gray-200 hover:bg-gray-50"
+                onClick={() => router.push(`/batches/${b.id}`)}
+              >
+                <td className="px-4 py-2">#{b.id}</td>
+                <td className="px-4 py-2">{new Date(b.created_at).toLocaleString("ko-KR")}</td>
+                <td className="px-4 py-2">{b.part_count}개</td>
+              </tr>
+            ))}
+            {batches.length === 0 && (
+              <tr>
+                <td colSpan={3} className="px-4 py-6 text-center text-gray-500">
+                  아직 실행한 회차가 없습니다. 위 버튼으로 시작하세요.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </main>
   );
