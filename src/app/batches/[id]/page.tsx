@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { PanelGridMap } from "@/components/PanelGridMap";
 import { use, useEffect, useRef, useState } from "react";
 import { deriveJudgment } from "@/lib/types";
 import type { BatchPart, Judgment } from "@/lib/types";
@@ -48,6 +49,8 @@ export default function BatchDetailPage({
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [decisionLoading, setDecisionLoading] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
   const detailVersion = useRef(0);
 
   useEffect(() => {
@@ -62,7 +65,10 @@ export default function BatchDetailPage({
 
   async function openDetail(serial: string) {
     const version = ++detailVersion.current;
-    setChatHistory([]);
+    const part = parts?.find((part) => part.serial_number === serial);
+    setChatHistory(part?.chat_history ?? []);
+    setDecisionError(null);
+    setDecisionLoading(false);
     setChatInput("");
     setChatLoading(false);
     setChatError(null);
@@ -106,11 +112,7 @@ export default function BatchDetailPage({
   const selectedJudgment = selectedPart
     ? deriveJudgment(selectedPart.summary.usable_zone_count, selectedPart.summary.total_zone_count)
     : null;
-  const usablePanels = selectedPart
-    ? selectedPart.reassignment
-        .filter((panel) => panel.judgment !== "Fail")
-        .sort((a, b) => a.von_mises_mpa - b.von_mises_mpa)
-    : [];
+
 
   async function runTriage() {
     setTriageResult(null);
@@ -134,7 +136,7 @@ export default function BatchDetailPage({
 
   async function sendChatMessage() {
     const message = chatInput.trim();
-    if (!selected || !message || chatLoading) return;
+    if (!selected || !message || chatLoading || decisionLoading) return;
     const version = detailVersion.current;
     const history = chatHistory;
     setChatHistory((previous) => [...previous, { role: "user", content: message }]);
@@ -150,7 +152,11 @@ export default function BatchDetailPage({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "상담 응답 생성 실패");
       if (version !== detailVersion.current) return;
-      setChatHistory((previous) => [...previous, { role: "assistant", content: data.reply }]);
+      setChatHistory((previous) => [...previous, { role: "assistant", content: data.reply,
+        verified: data.verified, issues: data.issues, showMap: data.showMap }]);
+      if (data.part) {
+        setParts((previous) => previous?.map((part) => part.serial_number === data.part.serial_number ? data.part : part) ?? null);
+      }
     } catch (err) {
       if (version !== detailVersion.current) return;
       setChatHistory(history);
@@ -158,6 +164,29 @@ export default function BatchDetailPage({
       setChatError(err instanceof Error ? `오류: ${err.message}` : "오류");
     } finally {
       if (version === detailVersion.current) setChatLoading(false);
+    }
+  }
+
+  async function recordDecision(decision: "approved" | "rejected") {
+    if (!selected || decisionLoading || chatLoading) return;
+    const note = window.prompt("검사원 메모 (선택)", selectedPart?.inspector_note ?? "");
+    if (note === null) return;
+    const serial = selected;
+    const version = detailVersion.current;
+    setDecisionLoading(true);
+    setDecisionError(null);
+    try {
+      const res = await fetch(`/api/batches/${id}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial, decision, note }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "결정 저장 실패");
+      setParts((previous) => previous?.map((part) => part.serial_number === serial ? data.part : part) ?? null);
+    } catch (err) {
+      if (version === detailVersion.current) setDecisionError(err instanceof Error ? `오류: ${err.message}` : "오류");
+    } finally {
+      if (version === detailVersion.current) setDecisionLoading(false);
     }
   }
 
@@ -307,6 +336,23 @@ export default function BatchDetailPage({
       {selectedPart && (
         <section className="mt-6 rounded-lg border border-gray-300 bg-white p-6">
           <h2 className="text-lg font-semibold">{selectedPart.serial_number} 상세</h2>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => recordDecision("approved")} disabled={decisionLoading || chatLoading}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50">승인</button>
+            <button type="button" onClick={() => recordDecision("rejected")} disabled={decisionLoading || chatLoading}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50">반려</button>
+            {decisionLoading && <span className="text-sm text-gray-500">결정 저장 중...</span>}
+            {selectedPart.inspector_decision && (
+              <span className={`rounded px-2 py-1 text-xs ${selectedPart.inspector_decision === "approved" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                {selectedPart.inspector_decision === "approved" ? "✓ 승인됨" : "✗ 반려됨"}
+              </span>
+            )}
+          </div>
+          {selectedPart.inspector_decided_at && (
+            <p className="mt-2 text-xs text-gray-500">결정 시각: {new Date(selectedPart.inspector_decided_at).toLocaleString("ko-KR")}</p>
+          )}
+          {selectedPart.inspector_note && <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600">메모: {selectedPart.inspector_note}</p>}
+          {decisionError && <p className="mt-2 text-sm text-red-700">{decisionError}</p>}
           <p className="mt-2 text-sm text-gray-600">
             종합 판정:{" "}
             <span className={`rounded px-2 py-0.5 font-semibold ${JUDGMENT_COLOR[selectedJudgment!]}`}>
@@ -326,16 +372,8 @@ export default function BatchDetailPage({
             </ul>
           )}
           {selectedJudgment === "Conditional Pass" && (
-            <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-              <p className="font-medium">사용 가능한 설치 구역 (응력 낮은 순, 상위 10개)</p>
-              <ul className="mt-1 space-y-0.5 text-xs">
-                {usablePanels.slice(0, 10).map((panel) => (
-                  <li key={panel.panel_id}>
-                    {panel.panel_id}: {panel.von_mises_mpa.toFixed(2)} MPa ({panel.judgment})
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <PanelGridMap panels={selectedPart.reassignment}
+              highlightPanelIds={selectedPart.defect.map((d) => d.panel_id)} className="mt-3" />
           )}
           <div className="mt-4">
             <h3 className="font-medium">AI 분석 리포트</h3>
@@ -368,9 +406,19 @@ export default function BatchDetailPage({
             <div className="mt-3 space-y-3" aria-live="polite">
               {chatHistory.map((turn, index) => (
                 <div key={index} className={turn.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                  <p className={`max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${turn.role === "user" ? "bg-blue-50 text-blue-800" : "text-gray-700"}`}>
-                    {turn.content}
-                  </p>
+                  <div className="max-w-[85%]">
+                    <p className={`whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${turn.role === "user" ? "bg-blue-50 text-blue-800" : "text-gray-700"}`}>
+                      {turn.content}
+                    </p>
+                    {turn.role === "assistant" && turn.verified === false && (
+                      <span className="mt-1 inline-block rounded bg-amber-50 px-2 py-1 text-xs text-amber-700"
+                        title={turn.issues?.join("\n")}>⚠ 확인 필요</span>
+                    )}
+                    {turn.role === "assistant" && turn.showMap === true && (
+                      <PanelGridMap panels={selectedPart.reassignment}
+                        highlightPanelIds={selectedPart.defect.map((d) => d.panel_id)} className="mt-2" />
+                    )}
+                  </div>
                 </div>
               ))}
               {chatLoading && <p className="text-sm text-gray-500">답변 생성 중...</p>}
@@ -381,12 +429,12 @@ export default function BatchDetailPage({
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter" && event.nativeEvent.isComposing) event.preventDefault(); }}
-                disabled={chatLoading}
+                disabled={chatLoading || decisionLoading}
                 aria-label="부품 판정에 대한 질문"
                 placeholder="판정에 대해 질문하세요"
                 className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm"
               />
-              <button type="submit" disabled={chatLoading || !chatInput.trim()}
+              <button type="submit" disabled={chatLoading || decisionLoading || !chatInput.trim()}
                 className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50">
                 전송
               </button>

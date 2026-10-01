@@ -1,23 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { PanelGridMap } from "@/components/PanelGridMap";
 import { use, useEffect, useState } from "react";
 import { deriveJudgment } from "@/lib/types";
-import type { Judgment, JudgeResult } from "@/lib/types";
+import type { JudgeResult } from "@/lib/types";
 
 interface ScenarioResult extends JudgeResult {
   scenario_id: string;
   report: string;
-}
-
-const JUDGMENT_COLOR: Record<Judgment, string> = {
-  Pass: "#22c55e",
-  "Conditional Pass": "#f59e0b",
-  Fail: "#ef4444",
-};
-
-function angleDeg(x: number, y: number): number {
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
 type MapMode = "panels" | "reassignment";
@@ -49,9 +40,7 @@ export default function ResultPage({
   }, [scenarioId]);
 
   const shownPanels = mode === "panels" ? data?.panels : data?.reassignment;
-  const zValues = shownPanels?.map((p) => p.z_mm) ?? [];
-  const zMin = Math.min(...zValues);
-  const zMax = Math.max(...zValues);
+
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
@@ -93,40 +82,9 @@ export default function ResultPage({
             </div>
           )}
 
-          <section
-            aria-label="동체외벽 2D 전개도"
-            className="relative mt-4 h-72 overflow-hidden rounded-lg border border-gray-300 bg-gray-100"
-          >
-            {shownPanels?.map((panel) => {
-              const left = (angleDeg(panel.x_mm, panel.y_mm) / 360) * 100;
-              const top = zMax === zMin ? 50 : ((panel.z_mm - zMin) / (zMax - zMin)) * 100;
-              const isDefect = data.defect.some((d) => d.panel_id === panel.panel_id);
-              return (
-                <div
-                  key={panel.panel_id}
-                  title={`${panel.panel_id} · ${panel.von_mises_mpa} MPa · ${panel.judgment}`}
-                  className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-sm"
-                  style={{
-                    left: `${left}%`,
-                    top: `${top}%`,
-                    backgroundColor: JUDGMENT_COLOR[panel.judgment],
-                    outline: mode === "panels" && isDefect ? "2px solid black" : undefined,
-                  }}
-                />
-              );
-            })}
-            <div className="absolute bottom-2 left-2 flex gap-3 rounded bg-white/80 px-2 py-1 text-xs">
-              {(Object.keys(JUDGMENT_COLOR) as Judgment[]).map((j) => (
-                <span key={j} className="flex items-center gap-1">
-                  <span
-                    className="inline-block h-2.5 w-2.5 rounded-sm"
-                    style={{ backgroundColor: JUDGMENT_COLOR[j] }}
-                  />
-                  {j}
-                </span>
-              ))}
-            </div>
-          </section>
+          <PanelGridMap panels={shownPanels ?? []}
+            highlightPanelIds={mode === "panels" ? data.defect.map((d) => d.panel_id) : []}
+            className="mt-4" />
           {data.defect.length > 0 && (
             <p className="mt-2 text-xs text-gray-500">
               {mode === "panels"
