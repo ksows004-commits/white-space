@@ -1,12 +1,13 @@
 """FastAPI service wrapping judge.py for the GPU server.
 
-Serves GET /judge/{scenario_id} and GET /judge_batch. Reads real PrePoMax case-1
-stress data (converted from .frd via frd_to_csv.py) — falls back to a MOCK CSV if
-the real file isn't present. Defect placement is picked dynamically from the
-stress distribution (see docs/scenarios.md) rather than hardcoded coordinates.
+Serves GET /judge/{scenario_id}, POST /judge_defects (file upload path), and
+the exploratory /judge_defects_fast + /judge_defects_smart surrogate endpoints.
+Reads real PrePoMax case-1..4 stress data (converted from .frd via
+frd_to_csv.py) — falls back to a MOCK CSV if the real file isn't present.
+Defect placement for scenarios is picked dynamically from the stress
+distribution (see docs/scenarios.md) rather than hardcoded coordinates.
 """
 
-import itertools
 import json
 import logging
 import math
@@ -89,22 +90,6 @@ SCENARIO_DEFECTS = {
     "b": {"rule": "max", "sqrt_area_um": 300, "location": "surface"},
     "c": {"rule": "p90", "sqrt_area_um": 400, "location": "internal"},
 }
-
-# 배치 검사용 "정형화된 결함 풀" — 완전 무작위 대신, 규칙 5개 x 결함 크기 5단계 x
-# 위치 종류 2가지 = 50개를 미리 체계적으로 만들어두고 그중 일부를 뽑아서 쓴다.
-POOL_RULES = ["min", "q25", "median", "p90", "max"]
-POOL_SIZES_UM = [100, 300, 700, 1200, 1800]
-POOL_LOCATIONS = ["surface", "internal"]
-
-
-def _defect_pool() -> list[dict]:
-    return [
-        {"rule": rule, "sqrt_area_um": size, "location": location}
-        for rule, size, location in itertools.product(
-            POOL_RULES, POOL_SIZES_UM, POOL_LOCATIONS
-        )
-    ]
-
 
 def _load_one_case(candidates: list[str]) -> Optional[tuple[pd.DataFrame, str]]:
     for name in candidates:
@@ -286,38 +271,6 @@ def judge_scenario(scenario_id: str):
     }
 
 
-@app.get("/judge_batch")
-def judge_batch(count: int = 10, seed: int = 42):
-    """정형화된 결함 풀(50개)에서 seed 기반으로 count개를 뽑아 한 번에 판정한다.
-
-    시연 리허설과 실제 촬영 때 같은 seed면 항상 같은 결과가 나오도록,
-    진짜 무작위 대신 파이썬 random.Random(seed)로 고정한다.
-    """
-    pool = _defect_pool()
-    if not 1 <= count <= len(pool):
-        raise HTTPException(
-            status_code=400, detail=f"count는 1~{len(pool)} 사이여야 합니다"
-        )
-
-    panels_base, source = _load_envelope_panels()
-    sampled = random.Random(seed).sample(pool, count)
-
-    parts = []
-    for i, defect_config in enumerate(sampled, start=1):
-        result = _apply_defect(panels_base, defect_config)
-        parts.append(
-            {
-                "serial_number": f"WS-{seed}-{i:02d}",
-                "defect": result["defect_info"],
-                "panels": result["panels"].to_dict("records"),
-                "reassignment": result["reassignment"].to_dict("records"),
-                "summary": result["summary"],
-            }
-        )
-
-    return {"seed": seed, "data_source": source, "parts": parts}
-
-
 class UploadedDefect(BaseModel):
     serial_number: str
     x_mm: float
@@ -334,10 +287,11 @@ class UploadBatch(BaseModel):
 
 @app.post("/judge_defects")
 def judge_defects(body: UploadBatch):
-    """업로드된 실제 검사 파일을 판정한다. /judge_batch와 달리 결함 위치를
-    규칙으로 고르지 않고 파일에 적힌 실제 좌표로 찾는다. 같은 serial_number를
-    가진 행이 여러 개면 "부품 하나에 결함 여러 개"로 묶어서, 그 부품의
-    최종 판정은 결함들 중 가장 나쁜 것으로 정한다."""
+    """업로드된 실제 검사 파일을 판정한다. 결함 위치를 규칙으로 고르지 않고
+    파일에 적힌 실제 좌표로 찾는다. 같은 serial_number를 가진 행이 여러 개면
+    "부품 하나에 결함 여러 개"로 묶는다. 부품 전체 판정(116개 구역 커버리지
+    기준)은 프런트엔드에서 usable_zone_count/total_zone_count로부터
+    파생 계산한다(src/lib/types.ts의 deriveJudgment 참고)."""
     if not body.defects:
         raise HTTPException(status_code=400, detail="defects가 비어 있습니다")
     if any(d.location not in ("surface", "internal") for d in body.defects):
