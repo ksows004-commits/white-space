@@ -26,25 +26,6 @@ export default function BatchesPage() {
     loadBatches();
   }, []);
 
-  async function runNewBatch() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/batches", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 10 }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "실행 실패");
-      router.push(`/batches/${data.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function uploadFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = ""; // 같은 파일 다시 선택해도 onChange가 또 뜨도록
@@ -84,15 +65,9 @@ export default function BatchesPage() {
               className="hidden"
             />
           </label>
-          <button
-            onClick={runNewBatch}
-            disabled={loading}
-            className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
-          >
-            {loading ? "처리 중... (몇 초 걸릴 수 있음)" : "새 회차 실행 (10개, 테스트용)"}
-          </button>
         </div>
       </div>
+      {loading && <p className="mt-2 text-sm text-gray-500">처리 중... (몇 초 걸릴 수 있음)</p>}
 
       {error && (
         <p className="mt-4 rounded-lg border border-red-300 bg-red-50 p-4 text-red-700">{error}</p>
