@@ -1,0 +1,22 @@
+# 물리 판정 서버(api.py, judge.py)를 실행하는 데 필요한 Python 패키지.
+# 설치: pip install -r requirements.txt
+#
+# 참고: GPU는 필수가 아닙니다. torch는 GPU가 없으면 자동으로 CPU로 동작합니다
+# (train_surrogate.py 기준 torch.cuda.is_available() 체크).
+
+# --- 핵심 판정 로직 (judge.py, api.py) — 이게 없으면 서버 자체가 안 뜸 ---
+fastapi
+uvicorn[standard]
+pydantic
+pandas
+numpy
+
+# --- 응력 예측 surrogate 신경망 (surrogate_model.py) ---
+# 없어도 /judge_defects(핵심 판정 경로)는 정상 동작합니다. api.py가 import 실패를
+# try/except로 흡수하고 surrogate 관련 기능(/judge_defects_fast, /judge_defects_smart)만
+# 비활성화합니다.
+torch
+
+# --- surrogate 모델 재학습/평가 (train_surrogate.py) ---
+# 서버 서빙에는 불필요, 모델을 직접 재학습하고 싶을 때만 필요합니다.
+scikit-learn

@@ -38,6 +38,7 @@ __pycache__/
 
 .vercel
 .env*
+!.env.example
 
 # 작동에 쓰이지 않는 참고 자료(기획/원자재 스펙/원본 CAD) — 로컬 보관만, 저장소엔 불필요
 /개발계획서.pdf
