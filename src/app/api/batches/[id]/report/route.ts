@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { generateReport } from "@/lib/report";
+import { generateWorkOrder } from "@/lib/workorder";
+import { deriveJudgment } from "@/lib/types";
 import type { BatchPart } from "@/lib/types";
 
 // 특정 부품의 리포트를 클릭 시점에만 생성(비용/속도 절약). 한 번 생성하면
@@ -31,15 +33,24 @@ export async function GET(
     return NextResponse.json({ error: `부품을 찾을 수 없음: ${serial}` }, { status: 404 });
   }
 
-  if (parts[index].report) {
-    return NextResponse.json({ report: parts[index].report,
-      verified: parts[index].report_verified, issues: parts[index].report_issues ?? [] });
+  if (!parts[index].report) {
+    const { report, verified, issues } = await generateReport(parts[index], serial);
+    parts[index] = { ...parts[index], report, report_verified: verified, report_issues: issues };
   }
 
-  const { report, verified, issues } = await generateReport(parts[index], serial);
-  parts[index] = { ...parts[index], report, report_verified: verified, report_issues: issues };
+  // Pass가 아닌 부품은 작업지시서도 함께 캐시해서, 배치 트리아지를 따로 돌리지
+  // 않아도 부품 상세를 열 때 리포트와 작업지시서가 같이 나오게 한다.
+  const judgment = deriveJudgment(parts[index].summary.usable_zone_count, parts[index].summary.total_zone_count);
+  if (judgment !== "Pass" && !parts[index].work_order) {
+    parts[index] = { ...parts[index], work_order: await generateWorkOrder(parts[index], serial) };
+  }
 
   await supabase.from("inspection_batches").update({ parts }).eq("id", id);
 
-  return NextResponse.json({ report, verified, issues });
+  return NextResponse.json({
+    report: parts[index].report,
+    verified: parts[index].report_verified,
+    issues: parts[index].report_issues ?? [],
+    work_order: parts[index].work_order ?? null,
+  });
 }

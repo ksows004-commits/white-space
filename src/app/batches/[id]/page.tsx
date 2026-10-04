@@ -85,6 +85,13 @@ export default function BatchDetailPage({
       setReport(data.report);
       setReportVerified(data.verified);
       setReportIssues(data.issues ?? []);
+      if (data.work_order) {
+        setParts((previous) =>
+          previous?.map((part) =>
+            part.serial_number === serial ? { ...part, work_order: data.work_order } : part
+          ) ?? null
+        );
+      }
     } catch (err) {
       if (version !== detailVersion.current) return;
       setReport(err instanceof Error ? `오류: ${err.message}` : "오류");
